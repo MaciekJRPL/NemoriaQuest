@@ -34,6 +34,10 @@
             <id>placeholderapi</id>
             <url>https://repo.extendedclip.com/repository/maven-public/</url>
         </repository>
+        <repository>
+            <id>placeholderapi-legacy</id>
+            <url>https://repo.extendedclip.com/content/repositories/placeholderapi/</url>
+        </repository>
     </repositories>
 
     <dependencies>
