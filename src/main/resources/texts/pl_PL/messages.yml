@@ -1,0 +1,55 @@
+prefix: "<prefix> "
+command:
+  no_permission: "<prefix><error>Brak uprawnień."
+  player_only: "<prefix><error>Komenda tylko dla graczy."
+  unknown: "<prefix><error>Nieznana podkomenda."
+  reload: "<prefix><success>Przeładowano NemoriaQuest."
+  start:
+    usage: "<prefix><primary>Użycie: /nq start <questId>"
+    started: "<prefix><success>Uruchomiono misję <primary>{quest}</primary>."
+    not_found: "<prefix><error>Misja <primary>{quest}</primary> nie istnieje."
+    already_active: "<prefix><secondary>Misja <primary>{quest}</primary> jest już aktywna."
+    limit_reached: "<prefix><error>Nie można uruchomić misji <primary>{quest}</primary> (limit ukończeń)."
+    requirements: "<prefix><error>Nie spełniasz wymagań misji <primary>{quest}</primary>."
+    permission: "<prefix><error>Brak uprawnień do uruchomienia misji <primary>{quest}</primary>."
+  stop:
+    usage: "<prefix><primary>Użycie: /nq stop <questId>"
+    stopped: "<prefix><success>Zatrzymano misję <primary>{quest}</primary>."
+  active:
+    none: "<prefix><secondary>Brak aktywnych misji."
+    list: "<prefix><success>Aktywne misje: <primary>{list}"
+  list:
+    none: "<prefix><secondary>Brak dostępnych misji."
+    entry: "<primary>{id}</primary> <gray>-</gray> {name}"
+  info:
+    usage: "<prefix><primary>Użycie: /nq info <questId>"
+    not_found: "<prefix><error>Misja <primary>{quest}</primary> nie istnieje."
+    no_description: "<secondary>Brak opisu."
+    entry: "<success>[{id}] <primary>{name}</primary><dark_gray>: </dark_gray><secondary>{desc}"
+    objective: "<dark_gray>-</dark_gray> <primary>#{index}</primary> <secondary>{desc}"
+    max_completions: "<secondary>Maks ukończeń:</secondary> <primary>{count}"
+    requirements: "<secondary>Wymagania:</secondary> <primary>{reqs}"
+    requirements_none: "<secondary>Wymagania:</secondary> <primary>brak"
+  complete:
+    usage: "<prefix><primary>Użycie: /nq complete <questId>"
+    done: "<prefix><success>Oznaczono misję <primary>{quest}</primary> jako ukończoną."
+  progress:
+    usage: "<prefix><primary>Użycie: /nq progress <questId> <objectiveId>"
+    done: "<prefix><success>Ukończono cel <primary>{objective}</primary> w misji <primary>{quest}</primary>."
+  debug:
+    usage: "<prefix><primary>Użycie: /nq debug <on|off>"
+    enabled: "<prefix><success>Debug włączony."
+    disabled: "<prefix><secondary>Debug wyłączony."
+scoreboard:
+  no_objective: "<secondary>Brak celu"
+  empty: "<secondary>Nie mam nic do wyświetlenia"
+help:
+  title: "<gold>NemoriaQuest</gold> <gray>v{version}</gray> <dark_gray>|</dark_gray> <gold>Config</gold> <gray>v{config}</gray>"
+  lines:
+    - "<primary>/nq start <id></primary> <secondary>- Start misji"
+    - "<primary>/nq stop <id></primary> <secondary>- Zatrzymaj misję"
+    - "<primary>/nq active</primary> <secondary>- Aktywne misje"
+    - "<primary>/nq list</primary> <secondary>- Lista misji"
+    - "<primary>/nq info <id></primary> <secondary>- Szczegóły misji"
+    - "<primary>/nq complete <id></primary> <secondary>- Oznacz jako ukończoną"
+    - "<primary>/nq reload</primary> <secondary>- Przeładuj konfigurację"

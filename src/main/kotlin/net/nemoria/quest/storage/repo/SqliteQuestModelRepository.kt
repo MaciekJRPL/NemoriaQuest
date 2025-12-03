@@ -1,0 +1,200 @@
+package net.nemoria.quest.storage.repo
+
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import com.zaxxer.hikari.HikariDataSource
+import net.nemoria.quest.data.repo.QuestModelRepository
+import net.nemoria.quest.quest.*
+
+class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : QuestModelRepository {
+    private val gson = Gson()
+    private val objectivesType = object : TypeToken<List<QuestObjective>>() {}.type
+    private val descriptionLinesType = object : TypeToken<List<String>>() {}.type
+    private val statusItemsType = object : TypeToken<Map<QuestStatusItemState, StatusItemTemplate>>() {}.type
+    private val requirementsType = object : TypeToken<List<String>>() {}.type
+    private val rewardsType = object : TypeToken<QuestRewards>() {}.type
+    private val branchesType = object : TypeToken<Map<String, Branch>>() {}.type
+    private val variablesType = object : TypeToken<Map<String, String>>() {}.type
+    private val endObjectsType = object : TypeToken<Map<String, List<QuestEndObject>>>() {}.type
+
+    override fun findById(id: String): QuestModel? {
+        dataSource.connection.use { conn ->
+            conn.prepareStatement(
+                "SELECT name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators FROM quest_model WHERE id = ?"
+            ).use { ps ->
+                ps.setString(1, id)
+                ps.executeQuery().use { rs ->
+                    if (rs.next()) {
+                        return QuestModel(
+                            id = id,
+                            name = rs.getString("name"),
+                            description = rs.getString("description"),
+                            displayName = rs.getString("display_name"),
+                            descriptionLines = parseDescriptionLines(rs.getString("description_lines")),
+                            progressNotify = parseProgressNotify(rs.getString("progress_notify")),
+                            statusItems = parseStatusItems(rs.getString("status_items")),
+                            requirements = parseRequirements(rs.getString("requirements")),
+                            objectives = parseObjectives(rs.getString("objectives")),
+                            rewards = parseRewards(rs.getString("rewards")),
+                            saving = parseSaving(rs.getString("saving")),
+                            concurrency = parseConcurrency(rs.getString("concurrency")),
+                            players = parsePlayers(rs.getString("players")),
+                            startConditions = parseStartConditions(rs.getString("start_conditions")),
+                            completion = parseCompletion(rs.getString("completion")),
+                            activators = parseActivators(rs.getString("activators")),
+                            timeLimit = parseTimeLimit(rs.getString("time_limit")),
+                            variables = parseVariables(rs.getString("variables")),
+                            branches = parseBranches(rs.getString("branches")),
+                            mainBranch = rs.getString("main_branch"),
+                            endObjects = parseEndObjects(rs.getString("end_objects"))
+                        )
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    override fun findAll(): Collection<QuestModel> {
+        val list = mutableListOf<QuestModel>()
+        dataSource.connection.use { conn ->
+            conn.prepareStatement(
+                "SELECT id, name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators FROM quest_model"
+            ).use { ps ->
+                ps.executeQuery().use { rs ->
+                    while (rs.next()) {
+                        list.add(
+                            QuestModel(
+                                id = rs.getString("id"),
+                                name = rs.getString("name"),
+                                description = rs.getString("description"),
+                                displayName = rs.getString("display_name"),
+                                descriptionLines = parseDescriptionLines(rs.getString("description_lines")),
+                                progressNotify = parseProgressNotify(rs.getString("progress_notify")),
+                                statusItems = parseStatusItems(rs.getString("status_items")),
+                                requirements = parseRequirements(rs.getString("requirements")),
+                                objectives = parseObjectives(rs.getString("objectives")),
+                                rewards = parseRewards(rs.getString("rewards")),
+                                saving = parseSaving(rs.getString("saving")),
+                                concurrency = parseConcurrency(rs.getString("concurrency")),
+                                players = parsePlayers(rs.getString("players")),
+                                startConditions = parseStartConditions(rs.getString("start_conditions")),
+                                completion = parseCompletion(rs.getString("completion")),
+                                activators = parseActivators(rs.getString("activators")),
+                                timeLimit = parseTimeLimit(rs.getString("time_limit")),
+                                variables = parseVariables(rs.getString("variables")),
+                                branches = parseBranches(rs.getString("branches")),
+                                mainBranch = rs.getString("main_branch"),
+                                endObjects = parseEndObjects(rs.getString("end_objects"))
+                            )
+                        )
+                    }
+                }
+            }
+        }
+        return list
+    }
+
+    override fun save(model: QuestModel) {
+        dataSource.connection.use { conn ->
+            conn.prepareStatement(
+                """
+                INSERT INTO quest_model(id, name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description, display_name = excluded.display_name, description_lines = excluded.description_lines, progress_notify = excluded.progress_notify, status_items = excluded.status_items, requirements = excluded.requirements, objectives = excluded.objectives, rewards = excluded.rewards, time_limit = excluded.time_limit, variables = excluded.variables, branches = excluded.branches, main_branch = excluded.main_branch, end_objects = excluded.end_objects, saving = excluded.saving, concurrency = excluded.concurrency, players = excluded.players, start_conditions = excluded.start_conditions, completion = excluded.completion, activators = excluded.activators
+                """.trimIndent()
+            ).use { ps ->
+                ps.setString(1, model.id)
+                ps.setString(2, model.name)
+                ps.setString(3, model.description)
+                ps.setString(4, model.displayName)
+                ps.setString(5, gson.toJson(model.descriptionLines))
+                ps.setString(6, gson.toJson(model.progressNotify))
+                ps.setString(7, gson.toJson(model.statusItems))
+                ps.setString(8, gson.toJson(model.requirements))
+                ps.setString(9, gson.toJson(model.objectives))
+                ps.setString(10, gson.toJson(model.rewards))
+                ps.setString(11, gson.toJson(model.timeLimit))
+                ps.setString(12, gson.toJson(model.variables))
+                ps.setString(13, gson.toJson(model.branches))
+                ps.setString(14, model.mainBranch)
+                ps.setString(15, gson.toJson(model.endObjects))
+                ps.setString(16, gson.toJson(model.saving))
+                ps.setString(17, gson.toJson(model.concurrency))
+                ps.setString(18, gson.toJson(model.players))
+                ps.setString(19, gson.toJson(model.startConditions))
+                ps.setString(20, gson.toJson(model.completion))
+                ps.setString(21, gson.toJson(model.activators))
+                ps.executeUpdate()
+            }
+        }
+    }
+
+    private fun parseObjectives(raw: String?): List<QuestObjective> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching { gson.fromJson<List<QuestObjective>>(raw, objectivesType) }.getOrDefault(emptyList())
+    }
+
+    private fun parseDescriptionLines(raw: String?): List<String> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching { gson.fromJson<List<String>>(raw, descriptionLinesType) }.getOrDefault(emptyList())
+    }
+
+    private fun parseStatusItems(raw: String?): Map<QuestStatusItemState, StatusItemTemplate> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return runCatching { gson.fromJson<Map<QuestStatusItemState, StatusItemTemplate>>(raw, statusItemsType) }.getOrDefault(emptyMap())
+    }
+
+    private fun parseProgressNotify(raw: String?): ProgressNotify? {
+        if (raw.isNullOrBlank()) return null
+        return runCatching { gson.fromJson(raw, ProgressNotify::class.java) }.getOrNull()
+    }
+
+    private fun parseRequirements(raw: String?): List<String> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching { gson.fromJson<List<String>>(raw, requirementsType) }.getOrDefault(emptyList())
+    }
+
+    private fun parseRewards(raw: String?): QuestRewards =
+        runCatching { gson.fromJson<QuestRewards>(raw, rewardsType) }.getOrDefault(QuestRewards())
+
+    private fun parseTimeLimit(raw: String?): TimeLimit? =
+        runCatching { gson.fromJson(raw, TimeLimit::class.java) }.getOrNull()
+
+    private fun parseVariables(raw: String?): MutableMap<String, String> {
+        if (raw.isNullOrBlank()) return mutableMapOf()
+        return runCatching { gson.fromJson<Map<String, String>>(raw, variablesType)!!.toMutableMap() }.getOrDefault(mutableMapOf())
+    }
+
+    private fun parseBranches(raw: String?): Map<String, Branch> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return runCatching { gson.fromJson<Map<String, Branch>>(raw, branchesType) }.getOrDefault(emptyMap())
+    }
+
+    private fun parseEndObjects(raw: String?): Map<String, List<QuestEndObject>> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return runCatching { gson.fromJson<Map<String, List<QuestEndObject>>>(raw, endObjectsType) }.getOrDefault(emptyMap())
+    }
+
+    private fun parseSaving(raw: String?): SavingMode =
+        runCatching { gson.fromJson(raw, SavingMode::class.java) }.getOrDefault(SavingMode.ENABLED)
+
+    private fun parseConcurrency(raw: String?): Concurrency =
+        runCatching { gson.fromJson(raw, Concurrency::class.java) }.getOrDefault(Concurrency())
+
+    private fun parsePlayers(raw: String?): PlayerSettings =
+        runCatching { gson.fromJson(raw, PlayerSettings::class.java) }.getOrDefault(PlayerSettings())
+
+    private fun parseStartConditions(raw: String?): StartConditions? {
+        if (raw.isNullOrBlank()) return null
+        return runCatching { gson.fromJson(raw, StartConditions::class.java) }.getOrNull()
+    }
+
+    private fun parseCompletion(raw: String?): CompletionSettings =
+        runCatching { gson.fromJson(raw, CompletionSettings::class.java) }.getOrDefault(CompletionSettings())
+
+    private fun parseActivators(raw: String?): List<String> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching { gson.fromJson<List<String>>(raw, requirementsType) }.getOrDefault(emptyList())
+    }
+}

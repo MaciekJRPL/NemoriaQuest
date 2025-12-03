@@ -1,0 +1,10 @@
+# NemoriaQuest basic configuration
+# Docstring placeholder for future settings.
+config-version: '1.0'
+core:
+  multi_version: ["1.21.8", "1.21.9", "1.21.10"]
+  locale: en_US
+  debug: false
+  scoreboard_enabled: true
+logging:
+  level: INFO

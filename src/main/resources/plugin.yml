@@ -1,0 +1,39 @@
+name: NemoriaQuest
+description: Core quest plugin (multi 1.21.x)
+main: net.nemoria.quest.NemoriaQuestPlugin
+version: 0.0.1-SNAPSHOT
+api-version: 1.21
+author: Nemoria
+softdepend:
+  - PacketEvents
+  - Vault
+  - Citizens
+  - MythicMobs
+  - PlaceholderAPI
+commands:
+  nemoriaquest:
+    aliases: [nq]
+    description: Main command for NemoriaQuest
+permissions:
+  nemoriaquest.command:
+    default: op
+  nemoriaquest.command.reload:
+    default: op
+  nemoriaquest.command.start:
+    default: op
+  nemoriaquest.command.stop:
+    default: op
+  nemoriaquest.command.active:
+    default: true
+  nemoriaquest.command.list:
+    default: true
+  nemoriaquest.command.info:
+    default: true
+  nemoriaquest.command.complete:
+    default: op
+  nemoriaquest.command.progress:
+    default: op
+  nemoriaquest.command.debug:
+    default: op
+  nemoriaquest.command.gui:
+    default: true

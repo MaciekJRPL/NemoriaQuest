@@ -1,0 +1,133 @@
+package net.nemoria.quest
+
+import org.bukkit.plugin.java.JavaPlugin
+import net.nemoria.quest.config.ConfigLoader
+import net.nemoria.quest.config.CoreConfig
+import net.nemoria.quest.core.Registries
+import net.nemoria.quest.config.StorageConfigLoader
+import net.nemoria.quest.core.Services
+import net.nemoria.quest.storage.DataSourceProvider
+import net.nemoria.quest.storage.StorageManager
+import net.nemoria.quest.command.MainCommand
+import net.nemoria.quest.quest.QuestService
+import net.nemoria.quest.core.I18n
+import net.nemoria.quest.content.ContentBootstrap
+import net.nemoria.quest.util.ResourceExporter
+import net.nemoria.quest.listener.QuestListeners
+import net.nemoria.quest.listener.BranchInteractListener
+import net.nemoria.quest.config.GuiConfigLoader
+
+class NemoriaQuestPlugin : JavaPlugin() {
+    lateinit var coreConfig: CoreConfig
+        private set
+
+    override fun onEnable() {
+        Services.plugin = this
+        coreConfig = ConfigLoader(this).load()
+        net.nemoria.quest.core.DebugLog.enabled = coreConfig.debugEnabled
+        val storageConfig = StorageConfigLoader(this).load()
+        logger.info("NemoriaQuest enabling (targets ${coreConfig.multiVersion.joinToString()})")
+
+        Services.i18n = I18n(coreConfig.locale, "en_US")
+
+        initStorage(storageConfig)
+        exportTexts()
+
+        Registries.bootstrap()
+
+        Services.variables = net.nemoria.quest.core.VariableService(this, Services.storage.serverVarRepo)
+        Services.variables.load()
+        Services.scoreboardManager.start()
+        if (server.pluginManager.getPlugin("PlaceholderAPI") != null) {
+            net.nemoria.quest.hook.PlaceholderHook().register()
+            logger.info("PlaceholderAPI detected - NemoriaQuest placeholders aktywne")
+        }
+        if (server.pluginManager.getPlugin("PacketEvents") != null) {
+            logger.info("PacketEvents detected; hook will be activated when implemented")
+        }
+
+        ContentBootstrap(this, Services.storage.questModelRepo).bootstrap()
+        loadGuiConfigs()
+        server.pluginManager.registerEvents(net.nemoria.quest.gui.GuiListener(), this)
+        server.pluginManager.registerEvents(net.nemoria.quest.listener.DivergeGuiListener(), this)
+
+        getCommand("nemoriaquest")?.setExecutor(MainCommand(this))
+        server.pluginManager.registerEvents(QuestListeners(), this)
+        server.pluginManager.registerEvents(BranchInteractListener(), this)
+    }
+
+    override fun onDisable() {
+        if (::coreConfig.isInitialized) {
+            runCatching { Services.storage.close() }
+        }
+        Services.scoreboardManager.stop()
+        logger.info("NemoriaQuest disabled")
+    }
+
+    fun reloadAll(): Boolean {
+        saveDefaultConfig()
+        reloadConfig()
+        coreConfig = ConfigLoader(this).load()
+        net.nemoria.quest.core.DebugLog.enabled = coreConfig.debugEnabled
+        Services.i18n = I18n(coreConfig.locale, "en_US")
+        val storageConfig = StorageConfigLoader(this).load()
+        runCatching { Services.storage.close() }
+        initStorage(storageConfig)
+        exportTexts()
+        Services.variables = net.nemoria.quest.core.VariableService(this, Services.storage.serverVarRepo)
+        Services.variables.load()
+        Services.scoreboardManager.start()
+        if (server.pluginManager.getPlugin("PlaceholderAPI") != null) {
+            net.nemoria.quest.hook.PlaceholderHook().register()
+        }
+        ContentBootstrap(this, Services.storage.questModelRepo).bootstrap()
+        resumeActiveBranches()
+        loadGuiConfigs()
+        server.pluginManager.registerEvents(net.nemoria.quest.gui.GuiListener(), this)
+        server.pluginManager.registerEvents(net.nemoria.quest.listener.DivergeGuiListener(), this)
+        return true
+    }
+
+    private fun initStorage(storageConfig: net.nemoria.quest.config.StorageConfig) {
+        val dataSource = DataSourceProvider.create(storageConfig)
+        Services.storage = StorageManager(dataSource)
+        Services.questService = QuestService(this, Services.storage.userRepo, Services.storage.questModelRepo)
+    }
+
+    private fun exportTexts() {
+        ResourceExporter.exportIfMissing(
+            this,
+            listOf(
+                "texts/en_US/messages.yml",
+                "texts/en_US/gui.yml",
+                "texts/pl_PL/messages.yml",
+                "texts/pl_PL/gui.yml",
+                "gui/default.yml",
+                "gui/active.yml",
+                "content/particle_scripts/demo.yml",
+                "default_variables.yml",
+                "server_variables.yml",
+                "global_variables.yml",
+                "content/templates/quest_template.yml"
+            )
+        )
+    }
+
+    private fun resumeActiveBranches() {
+        server.onlinePlayers.forEach { player ->
+            val data = Services.storage.userRepo.load(player.uniqueId)
+            data.activeQuests.forEach { qid ->
+                val model = Services.storage.questModelRepo.findById(qid) ?: return@forEach
+                if (model.branches.isNotEmpty()) {
+                    Services.questService.resumeBranch(player, model)
+                }
+            }
+        }
+    }
+
+    private fun loadGuiConfigs() {
+        val loader = GuiConfigLoader(this)
+        Services.guiDefault = loader.load("default")
+        Services.guiActive = loader.load("active")
+    }
+}

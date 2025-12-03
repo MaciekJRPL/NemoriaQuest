@@ -1,0 +1,301 @@
+id: alledrogo_1
+name: alledrogo_1
+display_name: "<white>? <white>Przynieś 10 stone"
+
+status_items:
+  AVAILABLE:
+    type: PAPER
+    custom_model_data: 29
+    name: "<white>Udaj się do <#71478A><bold>Alledrogo</bold> <white>po wyzwanie."
+    lore:
+      - "<red>Wygasa za: %questcreator_quest_wyzwanie_cooldown%"
+  PROGRESS:
+    type: BONE
+    name: "<gold>{name}"
+    lore:
+      - "{detailed_progression}"
+      - "<red>Wygasa za: %questcreator_quest_wyzwanie_cooldown%"
+      - ""
+      - "<gold>Nagroda:"
+      - "<dark_gray>- <gray>Otrzymasz <green><bold>{gvariable:drwal_kasa_latwa}</bold> <green>$"
+      - "<dark_gray>- <gray>Otrzymasz <yellow><bold>{gvariable:drwal_reputacja_latwa}</bold> <yellow>Reputacji"
+
+progress_notify:
+  scoreboard: true
+
+saving: ENABLED
+concurrency:
+  max_instances: -1
+  queue_on_limit: false
+players:
+  min: 1
+  max: 1
+  allow_leader_stop: true
+completion:
+  max_completions: -1
+activators: []
+
+time_limit:
+  duration: 24 HOUR
+  fail_goto: QUEST_FAIL
+
+model_variables:
+  dp: 0
+
+branches:
+  MAIN:
+    starts_at: START
+    objects:
+      START:
+        hide_chat: true
+        type: SERVER_ACTIONS
+        actions:
+          - PERFORM_COMMAND lp user {player} permission unset alledrogo.wyzwanie
+          - SEND_SOUND ENTITY_VILLAGER_AMBIENT
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white> ?"
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>                <#71478A>A i owszem, przynieś dla Pomocnik Alledrogo"
+          - "SEND_MESSAGE <white>                <#71478A>10 sztuk stone, abym mógł czymś handlować."
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>"
+          - WAIT_TICKS 80
+        goto: OBJECT DOSTARCZANIE_MISJA_NPC
+
+      ZAMKNIECIE:
+        hide_chat: true
+        type: SERVER_ACTIONS
+        actions:
+          - SEND_SOUND ENTITY_VILLAGER_AMBIENT
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white> ?"
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>                <#71478A>To jak zdobędziesz wpadnij"
+          - "SEND_MESSAGE <white>                <#71478A>do mnie i sprawdzimy czy się nada!"
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>"
+        goto: OBJECT DOSTARCZANIE_MISJA_NPC
+
+      DOSTARCZANIE_MISJA_NPC:
+        objective_detail: "<white>Dostarczyłeś {mvariable:dp} z 10"
+        type: NPC_INTERACT
+        npc: 35
+        click_types: [RIGHT_CLICK]
+        goto: OBJECT DOSTARCZANIE_MISJA_NPC2
+
+      DOSTARCZANIE_MISJA_NPC2:
+        objective_detail: "<white>Dostarczyłeś {mvariable:dp} z 10"
+        start_notify:
+          message:
+            - "<white>"
+            - "<white> ?"
+            - "<white>"
+            - "<white>                <#71478A>No dobra..."
+            - "<white>                <#71478A>Masz stona?"
+            - "<white>"
+            - "<white>"
+            - "<white>"
+          sound: ENTITY_VILLAGER_AMBIENT
+        hide_chat: true
+        type: DIVERGE_CHAT
+        choices:
+          1:
+            text: "<#a0df5f>> Mam, sprawdź czy się nada."
+            redo_text: "<#a0df5f>> Mam, sprawdź czy się nada."
+            goto: OBJECT DOSTARCZANIE_MISJA
+          2:
+            text: "<#e74c3c>> Nie, idę szukać dalej."
+            redo_text: "<#e74c3c>> Nie, idę szukać dalej."
+            goto: OBJECT ZAMKNIECIE
+
+      DOSTARCZANIE_MISJA:
+        objective_detail: "<white>Dostarczyłeś {mvariable:dp} z 10"
+        type: CONDITIONS_SWITCH
+        cases:
+          match:
+            match_amount: 1
+            no_match_amount: 0
+            conditions:
+              - type: ITEMS
+                item: STONE
+                item_amount: 1
+            goto: OBJECT DOSTARCZANIE_MISJA3
+        goto: OBJECT DOSTARCZANIE_MISJA2
+
+      DOSTARCZANIE_MISJA2:
+        objective_detail: "<white>Dostarczyłeś {mvariable:dp} z 10"
+        hide_chat: true
+        type: SERVER_ACTIONS
+        actions:
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <gray>[ <#00abff><bold>N</bold><#14aeff><bold>e</bold><#29b1ff><bold>m</bold><#3db4ff><bold>o</bold><#52b7ff><bold>r</bold><#66baff><bold>i</bold><gray> ] <dark_gray>> <#e74c3c><bold>Błąd!</bold> <gray>Nie posiadasz <#00ABFF>1 stona<gray>!"
+          - "SEND_MESSAGE <white>"
+          - WAIT_TICKS 40
+        goto: OBJECT ZAMKNIECIE
+
+      DOSTARCZANIE_MISJA3:
+        objective_detail: "<white>Dostarczyłeś {mvariable:dp} z 10"
+        type: SERVER_ITEMS_TAKE
+        count: 1
+        items:
+          - type: STONE
+            amount: 1
+        goto: OBJECT DOSTARCZANIE_MISJA4
+
+      DOSTARCZANIE_MISJA4:
+        objective_detail: "<white>Dostarczyłeś {mvariable:dp} z 10"
+        type: RANDOM
+        gotos:
+          - OBJECT PASUJE_ZLOTO
+          - OBJECT PASUJE_ZLOTO
+          - OBJECT PASUJE_ZLOTO
+          - OBJECT PASUJE_ZLOTO
+          - OBJECT NIEPASUJE_ZLOTO
+          - OBJECT NIEPASUJE_ZLOTO
+
+      PASUJE_ZLOTO:
+        objective_detail: "<white>Dostarczyłeś {mvariable:dp} z 10"
+        hide_chat: true
+        type: SERVER_ACTIONS
+        actions:
+          - SEND_SOUND ENTITY_VILLAGER_AMBIENT
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white> ?"
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>                <#71478A>Hmmm..."
+          - "SEND_MESSAGE <white>                <#71478A>..."
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>"
+          - WAIT_TICKS 50
+          - SEND_SOUND ENTITY_VILLAGER_AMBIENT
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white> ?"
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>                <#71478A>Coś z tego będzie."
+          - "SEND_MESSAGE <white>                <#a0df5f>Dobra biorę."
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>"
+          - WAIT_TICKS 30
+        goto: OBJECT DODAJ_ZLOTO
+
+      DODAJ_ZLOTO:
+        objective_detail: "<white>Dostarczyłeś {mvariable:dp} z 10"
+        type: SERVER_LOGIC_VARIABLE
+        variable: dp
+        value_formula: "{value} + 1"
+        goto: OBJECT INFORMACJE_ILOSCI_ZLOTA
+
+      NIEPASUJE_ZLOTO:
+        objective_detail: "<white>Dostarczyłeś {mvariable:dp} z 10"
+        hide_chat: true
+        type: SERVER_ACTIONS
+        actions:
+          - SEND_SOUND ENTITY_VILLAGER_AMBIENT
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white> ?"
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>                <#71478A>Hmmm..."
+          - "SEND_MESSAGE <white>                <#71478A>..."
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>"
+          - WAIT_TICKS 50
+          - SEND_SOUND ENTITY_VILLAGER_NO
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white> ?"
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>                <#71478A>Nie, nic z tego nie będzie."
+          - "SEND_MESSAGE <white>                <#e74c3c>Nie biorę."
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>"
+          - WAIT_TICKS 30
+        goto: OBJECT DOSTARCZANIE_MISJA_NPC2
+
+      INFORMACJE_ILOSCI_ZLOTA:
+        objective_detail: "<white>Dostarczyłeś {mvariable:dp} z 10"
+        hide_chat: true
+        type: SERVER_ACTIONS
+        actions:
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white><dark_gray>[ <white>Dostarczyłeś <#00ABFF>{mvariable:dp} <white>z <#00ABFF>10 <dark_gray>]"
+          - "SEND_MESSAGE <white>"
+          - "PERFORM_COMMAND playcustomsound sounds:efekty.wyzwanie.dodany.goal {player}"
+          - WAIT_TICKS 40
+        goto: OBJECT SPRAWDZANIE_ILOSCI_ZLOTA
+
+      SPRAWDZANIE_ILOSCI_ZLOTA:
+        objective_detail: "<white>Dostarczyłeś {mvariable:dp} z 10"
+        type: CONDITIONS_SWITCH
+        cases:
+          zero:
+            match_amount: 1
+            conditions:
+              - type: VARIABLE
+                variable: dp
+                compare: "="
+                value: 0
+            goto: OBJECT DOSTARCZANIE_MISJA_NPC2
+          one:
+            match_amount: 1
+            conditions:
+              - type: VARIABLE
+                variable: dp
+                compare: "="
+                value: 1
+            goto: OBJECT DOSTARCZANIE_MISJA_NPC2
+          lt10:
+            match_amount: 1
+            conditions:
+              - type: VARIABLE
+                variable: dp
+                compare: "<="
+                value: 9
+            goto: OBJECT DOSTARCZANIE_MISJA_NPC2
+          full:
+            match_amount: 1
+            conditions:
+              - type: VARIABLE
+                variable: dp
+                compare: "="
+                value: 10
+            goto: OBJECT GRATULACJE
+
+      GRATULACJE:
+        objective_detail: "<white>Dostarczyłeś {mvariable:dp} z 10"
+        hide_chat: true
+        type: SERVER_ACTIONS
+        actions:
+          - SEND_SOUND ENTITY_VILLAGER_AMBIENT
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white> ?"
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>                <#71478A>Wystarczy."
+          - "SEND_MESSAGE <white>                <#71478A>O to twoja zapłata."
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>"
+          - "SEND_MESSAGE <white>"
+          - WAIT_TICKS 40
+        goto: QUEST_SUCCESS
+
+end_objects:
+  SUCCESS:
+    1:
+      type: SERVER_ACTIONS
+      actions:
+        - "SEND_TITLE 10 100 10 <#a071ff>Wyzwania Ukończone,<gray>#Alledrogo"
+        - "PERFORM_COMMAND playcustomsound sounds:efekty.wyzwanie.ukonczone {player}"
+        - "PERFORM_COMMAND happyhud popup {player} money 200 {gvariable:drwal_kasa_latwa}"
+        - "PERFORM_COMMAND happyhud popup {player} reputacja 200 {gvariable:drwal_reputacja_latwa}"
+    2:
+      type: SERVER_LOGIC_MONEY
+      currency: VAULT
+      value_formula: "{value} + {gvariable:drwal_kasa_latwa}"
+    3:
+      type: SERVER_COMMANDS_PERFORM
+      commands:
+        - "ap give {player} {gvariable:drwal_reputacja_latwa}"

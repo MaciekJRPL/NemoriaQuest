@@ -1,0 +1,168 @@
+# Quest template (do skopiowania do content/quests/<id>.yml)
+id: sample_quest
+name: Sample Quest
+description: "Przykładowy quest z większością obsługiwanych typów"
+
+model_variables:
+  progress: 0
+  dp: 0
+
+players:
+  min: 1
+  max: 1
+
+progress_notify:
+  actionbar: "&ePostęp: {mvariable:progress}"
+  actionbar_duration: 3 SECOND
+
+status_items:
+  AVAILABLE:
+    type: PAPER
+    name: "&a{display_name}"
+    lore: ["&7Dostępne"]
+  PROGRESS:
+    type: MAP
+    name: "&6{display_name}"
+    lore: ["&7Trwa", "&7{detailed_progression}"]
+
+branches:
+  MAIN:
+    starts_at: START
+    objects:
+      START:
+        type: SERVER_ACTIONS
+        actions:
+          - "SEND_MESSAGE &aWitaj w zadaniu!"
+          - "SEND_MESSAGE &7User var: {variable:test} model var: {mvariable:progress} server: {server_variable:server_counter}"
+          - "SEND_SOUND ENTITY_PLAYER_LEVELUP"
+        goto: OBJECT SET_VARS
+
+      SET_VARS:
+        type: SERVER_ACTIONS
+        actions:
+          - "SEND_MESSAGE &eAktualizuję zmienne..."
+          - "PERFORM_COMMAND eco give {player} 1"
+        goto: OBJECT LOGIC_BLOCK
+
+      LOGIC_BLOCK:
+        type: SERVER_ACTIONS
+        actions:
+          - "SEND_MESSAGE &7Logika XP/points/vars"
+          - "PERFORM_COMMAND say model var +1"
+        goto: OBJECT NONE_WAIT
+
+      NONE_WAIT:
+        type: NONE
+        position:
+          radius: 3
+        goto: OBJECT GROUP_TEST
+
+      GROUP_TEST:
+        type: GROUP
+        objects: [STEP_A, STEP_B]
+        ordered_objects: true
+        required_objects: 2
+        goto: OBJECT GUI_PICK
+
+      STEP_A:
+        type: SERVER_ITEMS_GIVE
+        items:
+          - type: STONE
+            amount: 2
+        count: 1
+        goto: OBJECT STEP_B
+
+      STEP_B:
+        type: SERVER_ITEMS_TAKE
+        items:
+          - type: STONE
+            amount: 1
+        count: 1
+        goto: OBJECT DIVERGE_CHAT
+
+      DIVERGE_CHAT:
+        type: DIVERGE_CHAT
+        choices:
+          1:
+            text: "&aOpcja 1"
+            redo_text: "&aOpcja 1 (ponownie)"
+            goto: OBJECT ENTITIES
+          2:
+            text: "&bOpcja 2"
+            goto: OBJECT GUI_PICK
+
+      GUI_PICK:
+        type: DIVERGE_GUI
+        reopen_delay: 5 SECOND
+        choices:
+          left:
+            slot: 11
+            item:
+              type: EMERALD
+              name: "&aZielony wybór"
+              lore: ["&7Kontynuuj misję"]
+            max_completions: 1
+            goto: OBJECT ENTITIES
+          right:
+            slot: 15
+            item:
+              type: REDSTONE
+              name: "&cCzerwony wybór"
+            max_completions: 1
+            goto: OBJECT OBJECT_PICK
+
+      OBJECT_PICK:
+        type: DIVERGE_OBJECTS
+        choices:
+          obj1:
+            object: OBJ_BRANCH
+            goto: OBJECT RANDOM_PICK
+
+      OBJ_BRANCH:
+        type: SERVER_ACTIONS
+        actions:
+          - "SEND_MESSAGE &dWybrałeś obiektowy wybór"
+        goto: OBJECT RANDOM_PICK
+
+      ENTITIES:
+        type: SERVER_ENTITIES_SPAWN
+        goals:
+          1:
+            types: [PIG]
+            goal: 1
+        link_to_quest: true
+        goto: OBJECT EXPLOSIONS
+
+      EXPLOSIONS:
+        type: SERVER_EXPLOSIONS_CREATE
+        power: 2.0
+        count: 1
+        damage: false
+        goto: OBJECT FIREWORK
+
+      FIREWORK:
+        type: SERVER_FIREWORKS_LAUNCH
+        count: 1
+        effects:
+          - BALL
+        goto: OBJECT LIGHTNING
+
+      LIGHTNING:
+        type: SERVER_LIGHTNING_STRIKE
+        count: 1
+        damage: false
+        goto: OBJECT EFFECTS
+
+      EFFECTS:
+        type: SERVER_PLAYER_EFFECTS_GIVE
+        effects: ["SPEED 1 200"]
+        goto: OBJECT RANDOM_PICK
+
+      RANDOM_PICK:
+        type: RANDOM
+        avoid_repeat_end_types: [SUCCESS]
+        gotos:
+          - QUEST_SUCCESS
+          - QUEST_FAIL
+
+main_branch: MAIN

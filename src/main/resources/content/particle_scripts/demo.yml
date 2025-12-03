@@ -1,0 +1,13 @@
+particle: VILLAGER_HAPPY
+count: 10
+speed: 0.05
+offset:
+  x: 0.0
+  y: 1.0
+  z: 0.0
+spread:
+  x: 0.25
+  y: 0.35
+  z: 0.25
+interval: 5
+duration: 60

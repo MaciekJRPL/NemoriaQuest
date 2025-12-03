@@ -1,0 +1,8 @@
+# Storage configuration
+backend: SQLITE
+sqlite:
+  file: "plugins/NemoriaQuest/nemoriaquest.db"
+pool:
+  maximumPoolSize: 5
+  minimumIdle: 1
+  connectionTimeoutMs: 10000

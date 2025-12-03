@@ -1,0 +1,6 @@
+name: "<gold>NemoriaQuest"
+type: CHEST_6_ROW
+contents: []
+show_status: [] # AVAILABLE, PROGRESS, UNAVAILABLE, COMPLETED
+order_quests: true
+sort_quests_by_status: true
