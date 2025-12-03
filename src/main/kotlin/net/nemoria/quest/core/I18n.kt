@@ -1,6 +1,7 @@
 package net.nemoria.quest.core
 
 import org.bukkit.configuration.file.YamlConfiguration
+import java.io.File
 import java.io.InputStreamReader
 
 class I18n(private val locale: String, private val fallback: String = "en_US") {
@@ -31,6 +32,12 @@ class I18n(private val locale: String, private val fallback: String = "en_US") {
     }
 
     private fun loadBundle(path: String): YamlConfiguration? {
+        // 1) Spróbuj z pliku w katalogu danych pluginu (plugins/NemoriaQuest/...).
+        val dataFile = File(Services.plugin.dataFolder, path)
+        if (dataFile.exists()) {
+            return YamlConfiguration.loadConfiguration(dataFile)
+        }
+        // 2) Jeśli brak pliku zewnętrznego, użyj zasobu z JAR.
         val stream = this::class.java.classLoader.getResourceAsStream(path) ?: return null
         val cfg = YamlConfiguration()
         cfg.load(InputStreamReader(stream, Charsets.UTF_8))

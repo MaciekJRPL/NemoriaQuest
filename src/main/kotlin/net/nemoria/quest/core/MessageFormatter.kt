@@ -25,10 +25,9 @@ object MessageFormatter {
         if (centerTag) {
             raw = raw.replaceFirst("(?i)<center>".toRegex(), "").trimStart()
         }
-        val trimmed = raw.trim()
-        val rendered = if (trimmed.contains("<") && trimmed.contains(">")) {
+        val rendered = if (raw.contains("<") && raw.contains(">")) {
             // MiniMessage -> legacy section (hex-friendly) without extra translations
-            val comp = mm.deserialize(trimmed)
+            val comp = mm.deserialize(raw)
             LegacyComponentSerializer.legacySection().serialize(comp)
         } else {
             ChatColor.translateAlternateColorCodes('&', raw)

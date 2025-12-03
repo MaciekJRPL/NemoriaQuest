@@ -4,14 +4,14 @@ package net.nemoria.quest.core
  * Zdefiniowane kolory w formacie MiniMessage do spójnego użycia w wiadomościach.
  */
 object Colors {
-    const val PREFIX_TEXT = "<gold>[NemoriaQuest]</gold>"
-    const val PRIMARY = "<gold>"
-    const val SECONDARY = "<gray>"
-    const val DARK = "<dark_gray>"
-    const val SUCCESS = "<green>"
-    const val ERROR = "<red>"
-    const val INFO = "<aqua>"
-    const val ADMIN = "<light_purple>"
+    const val PREFIX_TEXT = "<#C7F000> NemoriaQuest <dark>❙ "
+    const val PRIMARY = "<#C7F000>"
+    const val SECONDARY = "<#a7af7f>"
+    const val DARK = "<#4F6000>"
+    const val SUCCESS = "<#a0df5f>"
+    const val ERROR = "<#e74c3c>"
+    const val INFO = "<gray>"
+    const val ADMIN = "<#00C7F0>"
 
     fun placeholders(): Map<String, String> = mapOf(
         "prefix" to PREFIX_TEXT,

@@ -1,9 +1,12 @@
 name: NemoriaQuest
-description: Core quest plugin (multi 1.21.x)
+description: >
+  Modular quest engine for Paper 1.21.x. Create story-driven quests using YAML models
+  with branches, conditions, Citizens NPCs, GUI menus, scoreboard tracking and full
+  multilingual support (Polish/English).
 main: net.nemoria.quest.NemoriaQuestPlugin
-version: 0.0.1-SNAPSHOT
+version: ${project.version}
 api-version: 1.21
-author: Nemoria
+author: Nemoria / MaciekJRPL
 softdepend:
   - PacketEvents
   - Vault
