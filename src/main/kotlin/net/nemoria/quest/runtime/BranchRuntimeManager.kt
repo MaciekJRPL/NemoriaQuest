@@ -73,7 +73,6 @@ class BranchRuntimeManager(
         val bukkit = player.player
         if (bukkit != null) {
             ChatHideService.show(bukkit.uniqueId)
-            ChatHideService.flushBuffered(bukkit)
         } else {
             ChatHideService.show(player.uniqueId)
         }
@@ -765,6 +764,7 @@ class BranchRuntimeManager(
         val diverge = divergeSessions.remove(player.uniqueId)
         val bukkit = player.player
         if (bukkit != null && diverge != null) {
+            ChatHideService.flushBufferedToHistory(bukkit.uniqueId)
             val currentHistory = ChatHistoryManager.history(bukkit.uniqueId)
             val gson = net.kyori.adventure.text.serializer.gson.GsonComponentSerializer.gson()
             val newMessages: List<Component> =
@@ -776,7 +776,11 @@ class BranchRuntimeManager(
                 } else emptyList()
             val mergedHistory = diverge.originalHistory + newMessages
             clearChatWindow(bukkit, 100)
-            replayHistory(bukkit, mergedHistory)
+            val finalHistory = mergedHistory.filter { msg ->
+                val json = gson.serialize(msg)
+                !diverge.syntheticMessages.contains(json)
+            }
+            replayHistory(bukkit, finalHistory)
         }
         ChatHideService.show(player.uniqueId)
         val gotoRaw = choice.goto ?: return
