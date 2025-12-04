@@ -1,7 +1,10 @@
 package net.nemoria.quest.gui
 
+import net.kyori.adventure.text.Component
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer
+import net.nemoria.quest.core.Colors
+import net.nemoria.quest.core.MessageFormatter
 import net.nemoria.quest.core.Services
-import net.nemoria.quest.quest.QuestModel
 import org.bukkit.Bukkit
 import org.bukkit.ChatColor
 import org.bukkit.entity.Player
@@ -9,11 +12,16 @@ import org.bukkit.scheduler.BukkitRunnable
 
 class ScoreboardManager {
     private var task: org.bukkit.scheduler.BukkitTask? = null
+    private val legacy = LegacyComponentSerializer.builder()
+        .character(ChatColor.COLOR_CHAR)
+        .hexColors()
+        .build()
+    private val entryPool = ChatColor.values().map { it.toString() }
 
     fun start() {
         stop()
-        val cfg = (Services.plugin as? net.nemoria.quest.NemoriaQuestPlugin)?.coreConfig
-        if (cfg != null && !cfg.scoreboardEnabled) return
+        val cfg = Services.scoreboardConfig
+        if (!cfg.enabled) return
         task = object : BukkitRunnable() {
             override fun run() {
                 Bukkit.getOnlinePlayers().forEach { update(it) }
@@ -30,32 +38,129 @@ class ScoreboardManager {
     fun update(player: Player) {
         val active = Services.storage.userRepo.load(player.uniqueId).activeQuests
         val quest = active.firstOrNull()?.let { Services.questService.questInfo(it) }
-        val progress = active.firstOrNull()?.let { Services.questService.progress(player)[it] }
-        val showQuest = quest != null &&
-            quest.progressNotify?.scoreboard == true
+        val showQuest = quest != null && quest.progressNotify?.scoreboard == true
+        val manager = Bukkit.getScoreboardManager() ?: return
+        if (player.scoreboard == manager.mainScoreboard) {
+            player.scoreboard = manager.newScoreboard
+        }
         val sb = player.scoreboard
-        val objective = sb.getObjective("nemoriaquest") ?: sb.registerNewObjective("nemoriaquest", "dummy", ChatColor.GOLD.toString() + "NemoriaQuest")
+        val objective = sb.getObjective("nemoriaquest") ?: sb.registerNewObjective(
+            "nemoriaquest",
+            "dummy",
+            legacy.deserialize(MessageFormatter.formatLegacyOnly("${Colors.PRIMARY}NemoriaQuest"))
+        )
         objective.displaySlot = org.bukkit.scoreboard.DisplaySlot.SIDEBAR
 
         val lines = mutableListOf<String>()
+        val cfg = Services.scoreboardConfig
+        val version = Services.plugin.description.version
+        val titleTemplate = if (cfg.title.contains("{version}")) cfg.title else (cfg.title + " <secondary>v{version}")
         if (showQuest && quest != null) {
-            val title = net.nemoria.quest.core.MessageFormatter.format(quest.displayName ?: quest.name)
-            objective.displayName = title.take(32)
-            val detailRaw = Services.questService.currentObjectiveDetail(player, quest.id) ?: "Brak celu"
-            val detail = net.nemoria.quest.core.MessageFormatter.format(detailRaw)
-            lines.add(ChatColor.YELLOW.toString() + detail.take(40))
+            val title = formatAndLimit(titleTemplate, cfg.maxTitleLength, mapOf("version" to version))
+            objective.displayName(legacy.deserialize(title))
+            val detailRaw = Services.questService.currentObjectiveDetail(player, quest.id)
+                ?: Services.i18n.msg("scoreboard.no_objective")
+            val questNamePlain = ChatColor.stripColor(MessageFormatter.formatLegacyOnly(quest.displayName ?: quest.name))
+                ?: (quest.displayName ?: quest.name)
+            val placeholders = mapOf(
+                "quest_name" to questNamePlain,
+                "objective_detail" to detailRaw,
+                "version" to version
+            )
+            cfg.activeLines.forEach { line ->
+                lines.add(formatAndLimit(line, cfg.maxLineLength, placeholders))
+            }
         } else {
-            objective.displayName = ChatColor.GOLD.toString() + "NemoriaQuest"
-            val msg = Services.i18n.msg("scoreboard.empty")
-            lines.add(net.nemoria.quest.core.MessageFormatter.format(msg))
+            val title = formatAndLimit(titleTemplate, cfg.maxTitleLength, mapOf("version" to version))
+            objective.displayName(legacy.deserialize(title))
+            val placeholders = mapOf(
+                "scoreboard_empty" to Services.i18n.msg("scoreboard.empty"),
+                "version" to version
+            )
+            cfg.emptyLines.forEach { line ->
+                lines.add(formatAndLimit(line, cfg.maxLineLength, placeholders))
+            }
         }
         // render lines
         var score = lines.size
         sb.entries.toList().forEach { sb.resetScores(it) }
-        lines.forEach {
-            objective.getScore(it).score = score--
+        sb.teams.toList().filter { it.name.startsWith("nq_line_") }.forEach { it.unregister() }
+        lines.forEachIndexed { idx, line ->
+            val team = sb.registerNewTeam("nq_line_$idx")
+            val entry = entryKey(idx)
+            val (prefixText, suffixText) = splitLine(line)
+            team.prefix(legacy.deserialize(prefixText))
+            team.suffix(legacy.deserialize(suffixText))
+            team.addEntry(entry)
+            objective.getScore(entry).score = score--
         }
         player.scoreboard = sb
+    }
+
+    private fun formatAndLimit(raw: String, limit: Int, placeholders: Map<String, String>): String {
+        var text = raw
+        placeholders.forEach { (k, v) ->
+            text = text.replace("{$k}", v)
+        }
+        val formatted = MessageFormatter.formatLegacyOnly(text)
+        return trimWithColors(formatted, limit)
+    }
+
+    private fun splitLine(line: String): Pair<String, String> {
+        val section = '\u00A7'
+        var idx = 0
+        var visible = 0
+        var lastColor = ""
+        while (idx < line.length && visible < 16) {
+            val c = line[idx]
+            if (c == section && idx + 1 < line.length) {
+                val next = line[idx + 1]
+                if (next.lowercaseChar() == 'x' && idx + 13 < line.length) {
+                    lastColor = line.substring(idx, idx + 14)
+                    idx += 14
+                    continue
+                }
+                lastColor = line.substring(idx, idx + 2)
+                idx += 2
+                continue
+            }
+            idx++
+            visible++
+        }
+        val prefix = line.substring(0, idx)
+        if (idx >= line.length) return prefix to ""
+        val suffixRaw = lastColor + line.substring(idx)
+        val suffix = trimWithColors(suffixRaw, 16)
+        return prefix to suffix
+    }
+
+    private fun trimWithColors(input: String, limit: Int): String {
+        val sb = StringBuilder()
+        var visible = 0
+        var i = 0
+        val section = '\u00A7'
+        while (i < input.length && visible < limit) {
+            val c = input[i]
+            if (c == section && i + 1 < input.length) {
+                val next = input[i + 1]
+                if (next.lowercaseChar() == 'x' && i + 13 < input.length) {
+                    sb.append(input, i, i + 14)
+                    i += 14
+                    continue
+                }
+                sb.append(c).append(next)
+                i += 2
+                continue
+            }
+            sb.append(c)
+            visible++
+            i++
+        }
+        return sb.toString()
+    }
+
+    private fun entryKey(index: Int): String {
+        return entryPool.getOrNull(index) ?: "${ChatColor.COLOR_CHAR}${index.toString(16)}${ChatColor.RESET}"
     }
 
     private fun clear(player: Player) {

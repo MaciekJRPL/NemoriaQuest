@@ -88,6 +88,8 @@ data class QuestObjectNode(
     val type: QuestObjectNodeType = QuestObjectNodeType.SERVER_ACTIONS,
     val description: String? = null,
     val actions: List<String> = emptyList(),
+    val message: List<String> = emptyList(),
+    val dialog: Boolean = false,
     val goto: String? = null,
     val gotos: List<String> = emptyList(),
     val logic: String? = null,

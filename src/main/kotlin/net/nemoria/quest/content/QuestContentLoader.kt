@@ -210,6 +210,7 @@ object QuestContentLoader {
             )
         }
         val hideChat = sec.getBoolean("hide_chat", false)
+        val dialogMode = sec.getBoolean("dialog", false)
         val npcId = sec.getInt("npc", -1).let { if (it >= 0) it else null }
         val clickTypes = sec.getStringList("click_types")
         val choices = sec.getConfigurationSection("choices")?.getKeys(false)?.mapNotNull { key ->
@@ -295,6 +296,7 @@ object QuestContentLoader {
             title = title,
             startNotify = startNotify,
             hideChat = hideChat,
+            dialog = dialogMode,
             npcId = npcId,
             clickTypes = clickTypes,
             choices = choices,

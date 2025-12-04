@@ -18,4 +18,5 @@ object Services {
     val guiManager: GuiManager by lazy { GuiManager() }
     lateinit var guiDefault: GuiConfig
     lateinit var guiActive: GuiConfig
+    lateinit var scoreboardConfig: net.nemoria.quest.config.ScoreboardConfig
 }

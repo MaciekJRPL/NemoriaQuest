@@ -6,6 +6,9 @@ import org.bukkit.entity.Entity
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
 import org.bukkit.event.player.AsyncPlayerChatEvent
+import org.bukkit.event.player.PlayerInteractEvent
+import org.bukkit.event.player.PlayerItemHeldEvent
+import org.bukkit.event.block.Action
 import org.bukkit.event.player.PlayerInteractEntityEvent
 
 class BranchInteractListener : Listener {
@@ -18,13 +21,29 @@ class BranchInteractListener : Listener {
 
     @EventHandler
     fun onChat(event: AsyncPlayerChatEvent) {
-        val msg = event.message.trim()
-        val idx = msg.toIntOrNull()
-        if (idx != null) {
-            val handled = Services.questService.branchRuntimeHandleChoice(event.player, idx)
-            if (handled) {
-                event.isCancelled = true
-            }
+        // Wyłącz wybór przez numer (wymaganie: tylko klik i scroll)
+        if (Services.questService.hasDiverge(event.player)) {
+            event.isCancelled = true
+        }
+    }
+
+    @EventHandler
+    fun onHotbarScroll(event: PlayerItemHeldEvent) {
+        val player = event.player
+        if (!Services.questService.hasDiverge(player)) return
+        val delta = event.newSlot - event.previousSlot
+        if (delta == 0) return
+        Services.questService.scrollDiverge(player, delta)
+        event.isCancelled = true
+    }
+
+    @EventHandler
+    fun onLeftClick(event: PlayerInteractEvent) {
+        val player = event.player
+        if (!Services.questService.hasDiverge(player)) return
+        if (event.action == Action.LEFT_CLICK_AIR || event.action == Action.LEFT_CLICK_BLOCK) {
+            Services.questService.acceptCurrentDiverge(player)
+            event.isCancelled = true
         }
     }
 

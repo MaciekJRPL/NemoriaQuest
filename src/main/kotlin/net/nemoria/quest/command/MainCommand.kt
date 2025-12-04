@@ -24,6 +24,7 @@ class MainCommand(private val plugin: NemoriaQuestPlugin) : CommandExecutor, Tab
             "progress" -> handleProgress(sender, args)
             "debug" -> handleDebug(sender, args)
             "gui" -> handleGui(sender, args)
+            "diverge" -> handleDiverge(sender, args)
             "prompt" -> handlePrompt(sender, args)
             else -> {
                 sendMsg(sender, "command.unknown")
@@ -253,6 +254,13 @@ class MainCommand(private val plugin: NemoriaQuestPlugin) : CommandExecutor, Tab
         val token = args.getOrNull(1) ?: return true
         Services.questService.handlePromptClick(player, token)
         return true
+    }
+
+    private fun handleDiverge(sender: CommandSender, args: Array<out String>): Boolean {
+        val player = sender as? org.bukkit.entity.Player ?: return true
+        val idx = args.getOrNull(1)?.toIntOrNull() ?: return true
+        val handled = Services.questService.branchRuntimeHandleChoice(player, idx)
+        return handled
     }
 
     override fun onTabComplete(

@@ -1,5 +1,9 @@
 package net.nemoria.quest
 
+import com.github.retrooper.packetevents.PacketEvents
+import com.github.retrooper.packetevents.PacketEventsAPI
+import io.github.retrooper.packetevents.factory.spigot.SpigotPacketEventsBuilder
+import net.nemoria.quest.hook.ChatHidePacketListener
 import org.bukkit.plugin.java.JavaPlugin
 import net.nemoria.quest.config.ConfigLoader
 import net.nemoria.quest.config.CoreConfig
@@ -13,13 +17,23 @@ import net.nemoria.quest.quest.QuestService
 import net.nemoria.quest.core.I18n
 import net.nemoria.quest.content.ContentBootstrap
 import net.nemoria.quest.util.ResourceExporter
+import net.nemoria.quest.hook.ChatHideBukkitListener
 import net.nemoria.quest.listener.QuestListeners
 import net.nemoria.quest.listener.BranchInteractListener
 import net.nemoria.quest.config.GuiConfigLoader
+import net.nemoria.quest.hook.ChatHistoryPacketListener
 
 class NemoriaQuestPlugin : JavaPlugin() {
     lateinit var coreConfig: CoreConfig
         private set
+    private var packetEvents: PacketEventsAPI<*>? = null
+
+    override fun onLoad() {
+        if (server.pluginManager.getPlugin("PacketEvents") != null) {
+            packetEvents = SpigotPacketEventsBuilder.build(this)
+            packetEvents?.load()
+        }
+    }
 
     override fun onEnable() {
         Services.plugin = this
@@ -37,19 +51,26 @@ class NemoriaQuestPlugin : JavaPlugin() {
 
         Services.variables = net.nemoria.quest.core.VariableService(this, Services.storage.serverVarRepo)
         Services.variables.load()
+        loadScoreboardConfig()
         Services.scoreboardManager.start()
         if (server.pluginManager.getPlugin("PlaceholderAPI") != null) {
             net.nemoria.quest.hook.PlaceholderHook().register()
             logger.info("PlaceholderAPI detected - NemoriaQuest placeholders aktywne")
         }
-        if (server.pluginManager.getPlugin("PacketEvents") != null) {
-            logger.info("PacketEvents detected; hook will be activated when implemented")
+        if (packetEvents == null && server.pluginManager.getPlugin("PacketEvents") != null) {
+            packetEvents = SpigotPacketEventsBuilder.build(this)
+            packetEvents?.load()
         }
+        packetEvents?.init()
+        packetEvents?.eventManager?.registerListener(ChatHidePacketListener())
+        packetEvents?.eventManager?.registerListener(ChatHistoryPacketListener())
+        packetEvents?.let { PacketEvents.setAPI(it) }
 
         ContentBootstrap(this, Services.storage.questModelRepo).bootstrap()
         loadGuiConfigs()
         server.pluginManager.registerEvents(net.nemoria.quest.gui.GuiListener(), this)
         server.pluginManager.registerEvents(net.nemoria.quest.listener.DivergeGuiListener(), this)
+        server.pluginManager.registerEvents(ChatHideBukkitListener(), this)
 
         getCommand("nemoriaquest")?.setExecutor(MainCommand(this))
         server.pluginManager.registerEvents(QuestListeners(), this)
@@ -61,6 +82,8 @@ class NemoriaQuestPlugin : JavaPlugin() {
             runCatching { Services.storage.close() }
         }
         Services.scoreboardManager.stop()
+        net.nemoria.quest.runtime.ChatHideService.clear()
+        packetEvents?.terminate()
         logger.info("NemoriaQuest disabled")
     }
 
@@ -76,6 +99,7 @@ class NemoriaQuestPlugin : JavaPlugin() {
         exportTexts()
         Services.variables = net.nemoria.quest.core.VariableService(this, Services.storage.serverVarRepo)
         Services.variables.load()
+        loadScoreboardConfig()
         Services.scoreboardManager.start()
         if (server.pluginManager.getPlugin("PlaceholderAPI") != null) {
             net.nemoria.quest.hook.PlaceholderHook().register()
@@ -85,6 +109,8 @@ class NemoriaQuestPlugin : JavaPlugin() {
         loadGuiConfigs()
         server.pluginManager.registerEvents(net.nemoria.quest.gui.GuiListener(), this)
         server.pluginManager.registerEvents(net.nemoria.quest.listener.DivergeGuiListener(), this)
+        server.pluginManager.registerEvents(ChatHideBukkitListener(), this)
+        net.nemoria.quest.runtime.ChatHideService.clear()
         return true
     }
 
@@ -108,7 +134,8 @@ class NemoriaQuestPlugin : JavaPlugin() {
                 "default_variables.yml",
                 "server_variables.yml",
                 "global_variables.yml",
-                "content/templates/quest_template.yml"
+                "content/templates/quest_template.yml",
+                "scoreboard.yml"
             )
         )
     }
@@ -129,5 +156,9 @@ class NemoriaQuestPlugin : JavaPlugin() {
         val loader = GuiConfigLoader(this)
         Services.guiDefault = loader.load("default")
         Services.guiActive = loader.load("active")
+    }
+
+    private fun loadScoreboardConfig() {
+        Services.scoreboardConfig = net.nemoria.quest.config.ScoreboardConfigLoader(this).load()
     }
 }

@@ -2,10 +2,15 @@ package net.nemoria.quest.runtime
 
 import net.nemoria.quest.core.DebugLog
 import net.nemoria.quest.core.MessageFormatter
+import net.nemoria.quest.runtime.ChatHideService
+import net.nemoria.quest.runtime.ChatHistoryManager
+import net.nemoria.quest.data.user.GroupProgress
 import net.nemoria.quest.quest.*
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.minimessage.MiniMessage
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
+import org.bukkit.GameMode
+import org.bukkit.NamespacedKey
 import org.bukkit.OfflinePlayer
 import org.bukkit.Particle
 import org.bukkit.Sound
@@ -14,31 +19,30 @@ import org.bukkit.entity.AbstractHorse
 import org.bukkit.entity.Horse
 import org.bukkit.entity.Sheep
 import org.bukkit.inventory.ItemStack
-import org.bukkit.NamespacedKey
-import org.bukkit.GameMode
 import org.bukkit.persistence.PersistentDataType
 import org.bukkit.plugin.java.JavaPlugin
 import org.bukkit.potion.PotionEffect
 import org.bukkit.potion.PotionEffectType
 import org.bukkit.scheduler.BukkitRunnable
 import java.io.File
-import java.util.*
+import java.util.UUID
 import kotlin.sequences.asSequence
-import net.nemoria.quest.data.user.GroupProgress
 
 class BranchRuntimeManager(
     private val plugin: JavaPlugin,
     private val questService: QuestService
 ) {
     private val sessions: MutableMap<UUID, BranchSession> = mutableMapOf()
-    private val divergeChoices: MutableMap<UUID, List<DivergeChoice>> = mutableMapOf()
+    private val divergeSessions: MutableMap<UUID, DivergeChatSession> = mutableMapOf()
     private val pendingPrompts: MutableMap<String, ActionContinuation> = mutableMapOf()
     private val pendingSneaks: MutableMap<UUID, ActionContinuation> = mutableMapOf()
     private val pendingNavigations: MutableMap<UUID, ActionContinuation> = mutableMapOf()
     private val particleScripts: MutableMap<String, ParticleScript> = mutableMapOf()
     private val guiSessions: MutableMap<UUID, DivergeGuiSession> = mutableMapOf()
 
-    fun hasDiverge(player: org.bukkit.entity.Player): Boolean = divergeChoices.containsKey(player.uniqueId)
+    fun hasDiverge(player: OfflinePlayer): Boolean = divergeSessions.containsKey(player.uniqueId)
+
+    fun hasDiverge(player: org.bukkit.entity.Player): Boolean = divergeSessions.containsKey(player.uniqueId)
     fun getQuestId(player: OfflinePlayer): String? = sessions[player.uniqueId]?.questId
 
     fun start(player: OfflinePlayer, model: QuestModel) {
@@ -65,7 +69,14 @@ class BranchRuntimeManager(
 
     fun stop(player: OfflinePlayer) {
         sessions.remove(player.uniqueId)?.timeLimitTask?.cancel()
-        divergeChoices.remove(player.uniqueId)
+        divergeSessions.remove(player.uniqueId)
+        val bukkit = player.player
+        if (bukkit != null) {
+            ChatHideService.show(bukkit.uniqueId)
+            ChatHideService.flushBuffered(bukkit)
+        } else {
+            ChatHideService.show(player.uniqueId)
+        }
         pendingSneaks.remove(player.uniqueId)
         pendingNavigations.remove(player.uniqueId)
         pendingPrompts.entries.removeIf { it.value.playerId == player.uniqueId }
@@ -90,9 +101,11 @@ class BranchRuntimeManager(
 
     private fun executeNode(player: OfflinePlayer, model: QuestModel, branchId: String, node: QuestObjectNode) {
         val p = player.player ?: return
-        divergeChoices.remove(player.uniqueId)
+        divergeSessions.remove(player.uniqueId)
         questService.updateBranchState(player, model.id, branchId, node.id)
-        sendStartNotify(p, node)
+        if (node.type != QuestObjectNodeType.DIVERGE_CHAT) {
+            sendStartNotify(p, node)
+        }
         when (node.type) {
             QuestObjectNodeType.NONE -> {
                 val pos = node.position
@@ -302,8 +315,23 @@ class BranchRuntimeManager(
             }
             QuestObjectNodeType.DIVERGE_CHAT -> {
                 sessions[player.uniqueId]?.nodeId = node.id
-                divergeChoices[player.uniqueId] = node.choices
-                sendDivergeChoices(p, node.choices)
+                val originalHistory = ChatHistoryManager.history(p.uniqueId)
+                val greyHistory = originalHistory.map { ChatHistoryManager.greyOut(it) }
+                if (node.hideChat || node.dialog) {
+                    ChatHideService.hide(player.uniqueId)
+                }
+                divergeSessions[player.uniqueId] = DivergeChatSession(
+                    node.choices,
+                    intro = (node.startNotify?.message ?: emptyList()) + node.message,
+                    dialogMode = node.dialog,
+                    currentIndex = 1,
+                    lastRenderIdx = 1,
+                    lastRenderAt = 0L,
+                    originalHistory = originalHistory,
+                    greyHistory = greyHistory,
+                    baselineSize = originalHistory.size
+                )
+                sendDivergeChoices(p, node.choices, highlightIdx = 1, storeState = true)
             }
         }
     }
@@ -727,23 +755,113 @@ class BranchRuntimeManager(
     }
 
     fun handleDivergeChoice(player: OfflinePlayer, choiceIndex: Int) {
-        val choices = divergeChoices[player.uniqueId] ?: return
-        val choice = choices.getOrNull(choiceIndex - 1) ?: return
+        val sessionChoices = divergeSessions[player.uniqueId] ?: return
+        val choice = sessionChoices.choices.getOrNull(choiceIndex - 1) ?: return
         val session = sessions[player.uniqueId] ?: return
         val model = questService.questInfo(session.questId) ?: return
         val branch = model.branches[session.branchId] ?: return
         val node = branch.objects[session.nodeId] ?: return
         if (node.type != QuestObjectNodeType.DIVERGE_CHAT) return
-        divergeChoices.remove(player.uniqueId)
+        val diverge = divergeSessions.remove(player.uniqueId)
+        val bukkit = player.player
+        if (bukkit != null && diverge != null) {
+            val currentHistory = ChatHistoryManager.history(bukkit.uniqueId)
+            val newMessages = if (currentHistory.size > diverge.baselineSize) currentHistory.drop(diverge.baselineSize) else emptyList()
+            val mergedHistory = diverge.originalHistory + newMessages
+            clearChatWindow(bukkit, 100)
+            replayHistory(bukkit, mergedHistory)
+        }
+        ChatHideService.show(player.uniqueId)
         val gotoRaw = choice.goto ?: return
         val target = normalizeTarget(gotoRaw)
         net.nemoria.quest.core.DebugLog.log("Diverge choice idx=$choiceIndex quest=${model.id} node=${node.id} -> $target")
         runNode(player, model, session.branchId, target, 0)
     }
 
-    private fun sendDivergeChoices(player: org.bukkit.entity.Player, choices: List<DivergeChoice>) {
-        choices.forEachIndexed { idx, ch ->
-            player.sendMessage("${idx + 1}. ${MessageFormatter.format(ch.text)}")
+    private fun sendDivergeChoices(
+        player: org.bukkit.entity.Player,
+        choices: List<DivergeChoice>,
+        highlightIdx: Int = 1,
+        storeState: Boolean = false
+    ) {
+        val session = divergeSessions[player.uniqueId]
+        if (choices.isEmpty()) return
+        if (session != null && session.lastRenderIdx == highlightIdx && !storeState) return
+        if (session != null) {
+            val now = System.currentTimeMillis()
+            if (!storeState && now - session.lastRenderAt < 200) return
+            session.lastRenderIdx = highlightIdx
+            session.lastRenderAt = System.currentTimeMillis()
+            val clearLines = 100
+            clearChatWindow(player, clearLines)
+            replayHistory(player, session.greyHistory)
+            repeat(2) {
+                ChatHideService.allowNext(player.uniqueId)
+                ChatHistoryManager.skipNextMessages(player.uniqueId)
+                player.sendMessage(Component.empty())
+            }
+        }
+        val legacy = net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer.legacySection()
+        val introLines = session?.intro?.map { legacy.deserialize(MessageFormatter.format(it)) } ?: emptyList()
+        val optionLines = choices.mapIndexed { idx, ch ->
+            val prefixColor = if (idx + 1 == highlightIdx) "<red>> " else "<green>> "
+            val formatted = MessageFormatter.format("$prefixColor${idx + 1}. ${ch.text}")
+            val comp = legacy.deserialize(formatted)
+            comp.clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/nq diverge ${idx + 1}"))
+        }
+        val hintRaw = net.nemoria.quest.core.Services.i18n.msg("chat_hint")
+        val hintComp = legacy.deserialize(MessageFormatter.format(hintRaw))
+
+        val allComps = introLines + optionLines + hintComp
+        val block = allComps.reduce { acc, c -> acc.append(net.kyori.adventure.text.Component.newline()).append(c) }
+
+        val sendMenu: () -> Unit = {
+            val chatType = com.github.retrooper.packetevents.protocol.chat.ChatTypes.CHAT
+            val json = net.kyori.adventure.text.serializer.gson.GsonComponentSerializer.gson().serialize(block)
+            ChatHideService.allowJsonOnce(player.uniqueId, json)
+            ChatHistoryManager.skipNextMessages(player.uniqueId)
+            val packet = com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSystemChatMessage(
+                chatType,
+                block
+            )
+            com.github.retrooper.packetevents.PacketEvents.getAPI().playerManager.sendPacket(player, packet)
+            session?.lastDialog = allComps.map { legacy.serialize(it) }
+        }
+
+        if (storeState) {
+            plugin.server.scheduler.runTask(plugin, Runnable { sendMenu() })
+        } else {
+            sendMenu()
+        }
+    }
+
+    fun scrollDiverge(player: org.bukkit.entity.Player, delta: Int) {
+        val session = divergeSessions[player.uniqueId] ?: return
+        if (session.choices.isEmpty()) return
+        val size = session.choices.size
+        val next = ((session.currentIndex - 1 + delta) % size + size) % size + 1
+        session.currentIndex = next
+        sendDivergeChoices(player, session.choices, highlightIdx = next)
+    }
+
+    fun acceptCurrentDiverge(player: org.bukkit.entity.Player) {
+        val session = divergeSessions[player.uniqueId] ?: return
+        handleDivergeChoice(player, session.currentIndex)
+    }
+
+    private fun clearChatWindow(player: org.bukkit.entity.Player, lines: Int = 100) {
+        repeat(lines) {
+            ChatHideService.allowNext(player.uniqueId)
+            ChatHistoryManager.skipNextMessages(player.uniqueId)
+            player.sendMessage(Component.empty())
+        }
+    }
+
+    private fun replayHistory(player: org.bukkit.entity.Player, history: List<Component>) {
+        history.forEach { comp ->
+            ChatHideService.allowNext(player.uniqueId)
+            ChatHistoryManager.skipNextMessages(player.uniqueId)
+            player.sendMessage(comp)
         }
     }
 
@@ -1291,6 +1409,8 @@ class BranchRuntimeManager(
         var selected: Boolean = false
     )
 }
+
+
 
 
 

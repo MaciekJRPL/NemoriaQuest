@@ -70,6 +70,14 @@ class QuestService(
     fun activeQuests(player: OfflinePlayer): Set<String> =
         userRepo.load(player.uniqueId).activeQuests.toSet()
 
+    fun hasDiverge(player: OfflinePlayer): Boolean = branchRuntime.hasDiverge(player)
+
+    fun scrollDiverge(player: org.bukkit.entity.Player, delta: Int) =
+        branchRuntime.scrollDiverge(player, delta)
+
+    fun acceptCurrentDiverge(player: org.bukkit.entity.Player) =
+        branchRuntime.acceptCurrentDiverge(player)
+
     fun progress(player: OfflinePlayer): Map<String, QuestProgress> =
         userRepo.load(player.uniqueId).progress.toMap()
 

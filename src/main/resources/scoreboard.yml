@@ -1,0 +1,9 @@
+enabled: true
+title: "<primary>NemoriaQuest <secondary>v{version}"
+empty_lines:
+  - "<secondary>{scoreboard_empty}"
+active_lines:
+  - "<primary>{quest_name}"
+  - "<secondary>{objective_detail}"
+max_title_length: 40
+max_line_length: 60

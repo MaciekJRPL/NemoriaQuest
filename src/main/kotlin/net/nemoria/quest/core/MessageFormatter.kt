@@ -19,11 +19,34 @@ object MessageFormatter {
         return out
     }
 
+    fun formatLegacyOnly(text: String): String {
+        var raw = applyColors(text)
+        raw = raw.replace("<#([0-9a-fA-F]{6})>".toRegex()) { m ->
+            val hex = m.groupValues[1]
+            buildString {
+                append('§').append('x')
+                hex.forEach { append('§').append(it) }
+            }
+        }
+        return ChatColor.translateAlternateColorCodes('&', raw.replace('§', '&'))
+    }
+
     fun format(text: String, allowCenter: Boolean = true): String {
         var raw = applyColors(text)
         val centerTag = allowCenter && raw.trimStart().lowercase().startsWith("<center>")
         if (centerTag) {
             raw = raw.replaceFirst("(?i)<center>".toRegex(), "").trimStart()
+        }
+        if (raw.contains('§')) {
+            raw = raw.replace("<#([0-9a-fA-F]{6})>".toRegex()) { m ->
+                val hex = m.groupValues[1]
+                buildString {
+                    append('§').append('x')
+                    hex.forEach { append('§').append(it) }
+                }
+            }
+            val rendered = ChatColor.translateAlternateColorCodes('&', raw.replace('§', '&'))
+            return if (centerTag) center(rendered) else rendered
         }
         val rendered = if (raw.contains("<") && raw.contains(">")) {
             // MiniMessage -> legacy section (hex-friendly) without extra translations
