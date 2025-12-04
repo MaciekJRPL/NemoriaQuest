@@ -22,7 +22,6 @@ object ChatHideService {
         allowOnce.remove(playerId)
         allowExact.remove(playerId)
         allowJson.remove(playerId)
-        buffered.remove(playerId)
     }
 
     fun isHidden(playerId: UUID): Boolean = hidden.contains(playerId)
@@ -84,8 +83,19 @@ object ChatHideService {
         val gson = net.kyori.adventure.text.serializer.gson.GsonComponentSerializer.gson()
         messages.forEach { json ->
             runCatching { gson.deserialize(json) }.onSuccess { comp ->
+                ChatHistoryManager.skipNextMessages(player.uniqueId)
                 allowNext(player.uniqueId)
                 player.sendMessage(comp)
+            }
+        }
+    }
+
+    fun flushBufferedToHistory(playerId: UUID) {
+        val messages = buffered.remove(playerId) ?: return
+        val gson = net.kyori.adventure.text.serializer.gson.GsonComponentSerializer.gson()
+        messages.forEach { json ->
+            runCatching { gson.deserialize(json) }.onSuccess { comp ->
+                ChatHistoryManager.append(playerId, comp)
             }
         }
     }
