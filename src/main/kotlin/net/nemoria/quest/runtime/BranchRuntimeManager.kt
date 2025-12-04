@@ -766,7 +766,14 @@ class BranchRuntimeManager(
         val bukkit = player.player
         if (bukkit != null && diverge != null) {
             val currentHistory = ChatHistoryManager.history(bukkit.uniqueId)
-            val newMessages = if (currentHistory.size > diverge.baselineSize) currentHistory.drop(diverge.baselineSize) else emptyList()
+            val gson = net.kyori.adventure.text.serializer.gson.GsonComponentSerializer.gson()
+            val newMessages: List<Component> =
+                if (currentHistory.size > diverge.baselineSize) {
+                    currentHistory.drop(diverge.baselineSize).filter { msg ->
+                        val json = gson.serialize(msg)
+                        !diverge.syntheticMessages.contains(json)
+                    }
+                } else emptyList()
             val mergedHistory = diverge.originalHistory + newMessages
             clearChatWindow(bukkit, 100)
             replayHistory(bukkit, mergedHistory)
@@ -819,6 +826,7 @@ class BranchRuntimeManager(
             val chatType = com.github.retrooper.packetevents.protocol.chat.ChatTypes.CHAT
             val json = net.kyori.adventure.text.serializer.gson.GsonComponentSerializer.gson().serialize(block)
             ChatHideService.allowJsonOnce(player.uniqueId, json)
+            divergeSessions[player.uniqueId]?.syntheticMessages?.add(json)
             ChatHistoryManager.skipNextMessages(player.uniqueId)
             val packet = com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSystemChatMessage(
                 chatType,

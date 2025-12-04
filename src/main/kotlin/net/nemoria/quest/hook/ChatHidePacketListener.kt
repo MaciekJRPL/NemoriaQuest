@@ -9,9 +9,12 @@ import com.github.retrooper.packetevents.protocol.packettype.PacketTypeCommon
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerChatMessage
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSystemChatMessage
 import net.nemoria.quest.runtime.ChatHideService
+import net.nemoria.quest.runtime.ChatHistoryManager
+import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer
 import org.bukkit.entity.Player
 
 class ChatHidePacketListener : PacketListenerAbstract(PacketListenerPriority.NORMAL) {
+    private val gson = GsonComponentSerializer.gson()
 
     override fun onPacketSend(event: PacketSendEvent) {
         val player = event.getPlayer<Player>() ?: return
@@ -37,6 +40,9 @@ class ChatHidePacketListener : PacketListenerAbstract(PacketListenerPriority.NOR
                     val json = wrapper.messageJson
                     if (json != null) {
                         ChatHideService.bufferMessage(player.uniqueId, json)
+                        runCatching { gson.deserialize(json) }.onSuccess { comp ->
+                            ChatHistoryManager.append(player.uniqueId, comp)
+                        }
                     }
                 }
                 PacketType.Play.Server.CHAT_MESSAGE -> {
@@ -45,6 +51,7 @@ class ChatHidePacketListener : PacketListenerAbstract(PacketListenerPriority.NOR
                     val gson = net.kyori.adventure.text.serializer.gson.GsonComponentSerializer.gson()
                     val json = gson.serialize(msg.chatContent)
                     ChatHideService.bufferMessage(player.uniqueId, json)
+                    ChatHistoryManager.append(player.uniqueId, msg.chatContent)
                 }
             }
             event.isCancelled = true

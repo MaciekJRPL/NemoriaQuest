@@ -16,6 +16,7 @@ class ChatHistoryPacketListener : PacketListenerAbstract(PacketListenerPriority.
 
     override fun onPacketSend(event: PacketSendEvent) {
         val player = event.getPlayer<Player>() ?: return
+        if (event.isCancelled) return
         val type = event.packetType ?: return
         when (type) {
             PacketType.Play.Server.SYSTEM_CHAT_MESSAGE -> {
