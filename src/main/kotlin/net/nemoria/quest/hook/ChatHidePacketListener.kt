@@ -4,10 +4,13 @@ import com.github.retrooper.packetevents.event.PacketListenerAbstract
 import com.github.retrooper.packetevents.event.PacketListenerPriority
 import com.github.retrooper.packetevents.event.PacketReceiveEvent
 import com.github.retrooper.packetevents.event.PacketSendEvent
+import com.github.retrooper.packetevents.protocol.chat.ChatTypes
 import com.github.retrooper.packetevents.protocol.packettype.PacketType
 import com.github.retrooper.packetevents.protocol.packettype.PacketTypeCommon
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerChatMessage
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDisguisedChat
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSystemChatMessage
+import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
 import net.nemoria.quest.core.Services
@@ -20,51 +23,58 @@ import java.util.concurrent.ConcurrentHashMap
 class ChatHidePacketListener : PacketListenerAbstract(PacketListenerPriority.NORMAL) {
     private val gson = GsonComponentSerializer.gson()
     private val plain = PlainTextComponentSerializer.plainText()
+
     private data class SeenEntry(val key: String, val time: Long)
+
     private val recent: MutableMap<UUID, ArrayDeque<SeenEntry>> = ConcurrentHashMap()
     private val dedupWindowMs = 250L
     private val maxSeen = 32
 
     override fun onPacketSend(event: PacketSendEvent) {
         val player = event.getPlayer<Player>() ?: return
-        val hidden = ChatHideService.isHidden(player.uniqueId) || Services.questService.hasDiverge(player)
+        val id = player.uniqueId
+        val hidden = ChatHideService.isHidden(id) || Services.questService.hasDiverge(player)
         if (!hidden) return
         val type = event.packetType ?: return
-        if (!isServerChat(type)) return
-
-        val result = when (type) {
-            PacketType.Play.Server.SYSTEM_CHAT_MESSAGE -> extractSystem(event)
-            PacketType.Play.Server.CHAT_MESSAGE -> extractChat(event)
-            else -> null
-        } ?: return
-
-        val (component, json) = result
+        val (component, json) = resolveComponent(type, event) ?: return
         val textKey = plain.serialize(component)
-        if (!recordMessage(player.uniqueId, type.name, textKey)) return
+        if (!recordMessage(id, type.name, textKey)) return
 
-        if (ChatHideService.consumeJson(player.uniqueId, json) ||
-            ChatHideService.consumeExact(player.uniqueId) ||
-            ChatHideService.consumeAllowed(player.uniqueId)) {
+        if (ChatHideService.consumeJson(id, json) ||
+            ChatHideService.consumeExact(id) ||
+            ChatHideService.consumeAllowed(id)
+        ) {
             return
         }
 
-        ChatHistoryManager.append(player.uniqueId, component)
-        ChatHideService.bufferMessage(player.uniqueId, json)
+        ChatHistoryManager.append(id, component)
+        ChatHideService.bufferMessage(id, json)
         event.isCancelled = true
     }
 
-    private fun extractSystem(event: PacketSendEvent): Pair<net.kyori.adventure.text.Component, String>? {
-        val wrapper = WrapperPlayServerSystemChatMessage(event)
-        val component = wrapper.message ?: wrapper.messageJson?.let { runCatching { gson.deserialize(it) }.getOrNull() } ?: return null
-        val json = wrapper.messageJson ?: gson.serialize(component)
-        return component to json
-    }
+    private fun resolveComponent(type: PacketTypeCommon, event: PacketSendEvent): Pair<Component, String>? {
+        return when (type) {
+            PacketType.Play.Server.SYSTEM_CHAT_MESSAGE -> {
+                val wrapper = WrapperPlayServerSystemChatMessage(event)
+                if (wrapper.type == ChatTypes.GAME_INFO) return null
+                val component = wrapper.message ?: wrapper.messageJson?.let { runCatching { gson.deserialize(it) }.getOrNull() }
+                component?.let { it to (wrapper.messageJson ?: gson.serialize(it)) }
+            }
 
-    private fun extractChat(event: PacketSendEvent): Pair<net.kyori.adventure.text.Component, String>? {
-        val wrapper = WrapperPlayServerChatMessage(event)
-        val component = wrapper.message.chatContent ?: return null
-        val json = gson.serialize(component)
-        return component to json
+            PacketType.Play.Server.CHAT_MESSAGE -> {
+                val wrapper = WrapperPlayServerChatMessage(event)
+                val component = wrapper.message.chatContent ?: return null
+                component to gson.serialize(component)
+            }
+
+            PacketType.Play.Server.DISGUISED_CHAT -> {
+                val wrapper = WrapperPlayServerDisguisedChat(event)
+                val component = wrapper.message ?: return null
+                component to gson.serialize(component)
+            }
+
+            else -> null
+        }
     }
 
     private fun recordMessage(playerId: UUID, typeName: String, textKey: String): Boolean {
@@ -89,16 +99,14 @@ class ChatHidePacketListener : PacketListenerAbstract(PacketListenerPriority.NOR
         }
     }
 
-    private fun isClientChat(type: PacketTypeCommon): Boolean = when (type) {
-        PacketType.Play.Client.CHAT_MESSAGE,
-        PacketType.Play.Client.CHAT_COMMAND,
-        PacketType.Play.Client.CHAT_COMMAND_UNSIGNED,
-        PacketType.Play.Client.CHAT_SESSION_UPDATE,
-        PacketType.Play.Client.CHAT_ACK -> true
-        else -> false
-    }
+    private fun isClientChat(type: PacketTypeCommon): Boolean =
+        when (type) {
+            PacketType.Play.Client.CHAT_MESSAGE,
+            PacketType.Play.Client.CHAT_COMMAND,
+            PacketType.Play.Client.CHAT_COMMAND_UNSIGNED,
+            PacketType.Play.Client.CHAT_SESSION_UPDATE,
+            PacketType.Play.Client.CHAT_ACK -> true
 
-    private fun isServerChat(type: PacketTypeCommon): Boolean =
-        type == PacketType.Play.Server.CHAT_MESSAGE ||
-            type == PacketType.Play.Server.SYSTEM_CHAT_MESSAGE
+            else -> false
+        }
 }

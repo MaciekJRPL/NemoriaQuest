@@ -72,7 +72,7 @@ class BranchRuntimeManager(
         divergeSessions.remove(player.uniqueId)
         val bukkit = player.player
         if (bukkit != null) {
-            ChatHideService.flushBuffered(bukkit)
+            ChatHideService.flushBufferedToHistory(bukkit.uniqueId)
             ChatHideService.show(bukkit.uniqueId)
         } else {
             ChatHideService.flushBufferedToHistory(player.uniqueId)

@@ -5,7 +5,9 @@ import com.github.retrooper.packetevents.event.PacketListenerPriority
 import com.github.retrooper.packetevents.event.PacketSendEvent
 import com.github.retrooper.packetevents.protocol.chat.ChatTypes
 import com.github.retrooper.packetevents.protocol.packettype.PacketType
+import com.github.retrooper.packetevents.protocol.packettype.PacketTypeCommon
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerChatMessage
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDisguisedChat
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSystemChatMessage
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer
@@ -31,32 +33,47 @@ class ChatHistoryPacketListener : PacketListenerAbstract(PacketListenerPriority.
         if (event.isCancelled) return
         if (ChatHideService.isHidden(player.uniqueId) || Services.questService.hasDiverge(player)) return
         val type = event.packetType ?: return
-        val component = when (type) {
+        val component = resolveComponent(type, event) ?: return
+        val text = plain.serialize(component)
+        if (!record(player.uniqueId, type.name, text)) {
+            DebugLog.log("ChatHistory dedup skip player=${player.name} text='$text'")
+            return
+        }
+
+        ChatHistoryManager.append(player.uniqueId, component)
+        DebugLog.log("ChatHistory store type=${type.name} player=${player.name} text='$text'")
+    }
+
+    private fun resolveComponent(type: PacketTypeCommon, event: PacketSendEvent): Component? {
+        return when (type) {
             PacketType.Play.Server.SYSTEM_CHAT_MESSAGE -> {
                 val wrapper = WrapperPlayServerSystemChatMessage(event)
-                if (wrapper.type == ChatTypes.GAME_INFO) return
+                if (wrapper.type == ChatTypes.GAME_INFO) return null
                 wrapper.message ?: wrapper.messageJson?.let { runCatching { gson.deserialize(it) }.getOrNull() }
             }
+
             PacketType.Play.Server.CHAT_MESSAGE -> {
                 val wrapper = WrapperPlayServerChatMessage(event)
                 wrapper.message.chatContent
             }
-            else -> null
-        } ?: return
 
-        val text = plain.serialize(component)
-        val key = text
-        val now = System.currentTimeMillis()
-        val queue = recent.computeIfAbsent(player.uniqueId) { ArrayDeque() }
-        val duplicate = queue.any { it.key == key && now - it.time <= dedupWindowMs }
-        if (duplicate) {
-            DebugLog.log("ChatHistory dedup skip player=${player.name} text='$text'")
-            return
+            PacketType.Play.Server.DISGUISED_CHAT -> {
+                val wrapper = WrapperPlayServerDisguisedChat(event)
+                wrapper.message
+            }
+
+            else -> null
         }
+    }
+
+    private fun record(playerId: UUID, typeName: String, text: String): Boolean {
+        val key = "$typeName:$text"
+        val now = System.currentTimeMillis()
+        val queue = recent.computeIfAbsent(playerId) { ArrayDeque() }
+        val duplicate = queue.any { it.key == key && now - it.time <= dedupWindowMs }
+        if (duplicate) return false
         queue.addLast(SeenEntry(key, now))
         while (queue.size > maxSeen) queue.removeFirst()
-
-        ChatHistoryManager.append(player.uniqueId, component)
-        DebugLog.log("ChatHistory store type=${type.name} player=${player.name} text='$text'")
+        return true
     }
 }
