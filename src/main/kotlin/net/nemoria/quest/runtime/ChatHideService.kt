@@ -1,17 +1,17 @@
 package net.nemoria.quest.runtime
 
+import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer
+import org.bukkit.entity.Player
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Przechowuje informacje, którym graczom ukrywamy czat podczas trwania node'a.
- */
 object ChatHideService {
     private val hidden: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
     private val allowOnce: MutableMap<UUID, Int> = ConcurrentHashMap()
     private val allowExact: MutableMap<UUID, Int> = ConcurrentHashMap()
     private val allowJson: MutableMap<UUID, MutableList<String>> = ConcurrentHashMap()
     private val buffered: MutableMap<UUID, MutableList<String>> = ConcurrentHashMap()
+    private val gson = GsonComponentSerializer.gson()
 
     fun hide(playerId: UUID) {
         hidden.add(playerId)
@@ -74,13 +74,11 @@ object ChatHideService {
     }
 
     fun bufferMessage(playerId: UUID, jsonMessage: String) {
-        val list = buffered.computeIfAbsent(playerId) { mutableListOf() }
-        list.add(jsonMessage)
+        buffered.computeIfAbsent(playerId) { mutableListOf() }.add(jsonMessage)
     }
 
-    fun flushBuffered(player: org.bukkit.entity.Player) {
+    fun flushBuffered(player: Player) {
         val messages = buffered.remove(player.uniqueId) ?: return
-        val gson = net.kyori.adventure.text.serializer.gson.GsonComponentSerializer.gson()
         messages.forEach { json ->
             runCatching { gson.deserialize(json) }.onSuccess { comp ->
                 ChatHistoryManager.skipNextMessages(player.uniqueId)
@@ -92,7 +90,6 @@ object ChatHideService {
 
     fun flushBufferedToHistory(playerId: UUID) {
         val messages = buffered.remove(playerId) ?: return
-        val gson = net.kyori.adventure.text.serializer.gson.GsonComponentSerializer.gson()
         messages.forEach { json ->
             runCatching { gson.deserialize(json) }.onSuccess { comp ->
                 ChatHistoryManager.append(playerId, comp)

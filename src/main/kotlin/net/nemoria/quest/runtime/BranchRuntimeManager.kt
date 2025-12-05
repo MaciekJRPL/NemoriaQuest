@@ -72,8 +72,10 @@ class BranchRuntimeManager(
         divergeSessions.remove(player.uniqueId)
         val bukkit = player.player
         if (bukkit != null) {
+            ChatHideService.flushBuffered(bukkit)
             ChatHideService.show(bukkit.uniqueId)
         } else {
+            ChatHideService.flushBufferedToHistory(player.uniqueId)
             ChatHideService.show(player.uniqueId)
         }
         pendingSneaks.remove(player.uniqueId)
@@ -807,9 +809,7 @@ class BranchRuntimeManager(
             clearChatWindow(player, clearLines)
             replayHistory(player, session.greyHistory)
             repeat(2) {
-                ChatHideService.allowNext(player.uniqueId)
-                ChatHistoryManager.skipNextMessages(player.uniqueId)
-                player.sendMessage(Component.empty())
+                sendSyntheticMessage(player, Component.empty())
             }
         }
         val legacy = net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer.legacySection()
@@ -863,18 +863,20 @@ class BranchRuntimeManager(
 
     private fun clearChatWindow(player: org.bukkit.entity.Player, lines: Int = 100) {
         repeat(lines) {
-            ChatHideService.allowNext(player.uniqueId)
-            ChatHistoryManager.skipNextMessages(player.uniqueId)
-            player.sendMessage(Component.empty())
+            sendSyntheticMessage(player, Component.empty())
         }
     }
 
     private fun replayHistory(player: org.bukkit.entity.Player, history: List<Component>) {
         history.forEach { comp ->
-            ChatHideService.allowNext(player.uniqueId)
-            ChatHistoryManager.skipNextMessages(player.uniqueId)
-            player.sendMessage(comp)
+            sendSyntheticMessage(player, comp)
         }
+    }
+
+    private fun sendSyntheticMessage(player: org.bukkit.entity.Player, component: Component) {
+        ChatHideService.allowNext(player.uniqueId)
+        ChatHistoryManager.skipNextMessages(player.uniqueId)
+        player.sendMessage(component)
     }
 
     private fun pickEntries(entries: List<QuestItemEntry>, count: Int): List<QuestItemEntry> {
