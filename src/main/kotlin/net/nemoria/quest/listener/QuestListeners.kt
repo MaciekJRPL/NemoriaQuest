@@ -88,20 +88,95 @@ class QuestListeners : Listener {
             val model = Services.storage.questModelRepo.findById(questId) ?: return@forEach
             val branchId = data.progress[questId]?.currentBranchId
             val nodeId = data.progress[questId]?.currentNodeId
-            val nodeType = branchId?.let { bid ->
-                nodeId?.let { nid -> model.branches[bid]?.objects?.get(nid)?.type }
-            }
-            // Wznawiamy tylko węzły oczekujące na interakcję, by nie odtwarzać akcji po zalogowaniu
-            if (model.branches.isNotEmpty() &&
-                nodeType in listOf(
-                    net.nemoria.quest.quest.QuestObjectNodeType.NPC_INTERACT,
-                    net.nemoria.quest.quest.QuestObjectNodeType.DIVERGE_CHAT,
-                    net.nemoria.quest.quest.QuestObjectNodeType.DIVERGE_GUI,
-                    net.nemoria.quest.quest.QuestObjectNodeType.DIVERGE_OBJECTS,
-                    net.nemoria.quest.quest.QuestObjectNodeType.NONE,
-                    net.nemoria.quest.quest.QuestObjectNodeType.GROUP
-                )
-            ) {
+            val nodeType = branchId?.let { bid -> nodeId?.let { nid -> model.branches[bid]?.objects?.get(nid)?.type } }
+            val resumableTypes = setOf(
+                net.nemoria.quest.quest.QuestObjectNodeType.NPC_INTERACT,
+                net.nemoria.quest.quest.QuestObjectNodeType.DIVERGE_CHAT,
+                net.nemoria.quest.quest.QuestObjectNodeType.DIVERGE_GUI,
+                net.nemoria.quest.quest.QuestObjectNodeType.DIVERGE_OBJECTS,
+                net.nemoria.quest.quest.QuestObjectNodeType.NONE,
+                net.nemoria.quest.quest.QuestObjectNodeType.GROUP,
+                // blocks
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_BLOCKS_BREAK,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_BLOCKS_PLACE,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_BLOCKS_INTERACT,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_BLOCKS_IGNITE,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_BLOCKS_STRIP,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_BLOCK_FARM,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_BLOCK_FROST_WALK,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_MAKE_PATHS,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_SPAWNER_PLACE,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_TREE_GROW,
+                // items
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_ACQUIRE,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_BREW,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_CONSUME,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_PUT,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_TAKE,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_CRAFT,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_DROP,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_ENCHANT,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_FISH,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_INTERACT,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_MELT,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_PICKUP,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_REPAIR,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_REQUIRE,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_THROW,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_TRADE,
+                // movement
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_MOVE,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_MOVE_BY_FOOT_DISTANCE,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_POSITION,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_SWIM_DISTANCE,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ELYTRA_FLY_DISTANCE,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ELYTRA_LAND,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_FALL_DISTANCE,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_HORSE_JUMP,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_JUMP,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_SPRINT_DISTANCE,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_VEHICLE_DISTANCE,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_WALK_DISTANCE,
+                // physical
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_BED_ENTER,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_BED_LEAVE,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_BUCKET_FILL,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_BURN,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_DIE,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_GAIN_HEALTH,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_GAIN_XP,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_PORTAL_ENTER,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_PORTAL_LEAVE,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_SHOOT_PROJECTILE,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_SNEAK,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_TAKE_DAMAGE,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_TOGGLE_SNEAK,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_VEHICLE_ENTER,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_VEHICLE_LEAVE,
+                // misc
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ACHIEVEMENT_AWARD,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_CHAT,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_CONNECT,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_DISCONNECT,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_RESPAWN,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_WAIT,
+                // entities
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ENTITIES_BREED,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ENTITIES_INTERACT,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ENTITIES_CATCH,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ENTITIES_DAMAGE,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ENTITIES_DEATH_NEARBY,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ENTITIES_DISMOUNT,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ENTITIES_GET_DAMAGED,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ENTITIES_KILL,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ENTITIES_MOUNT,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ENTITIES_SHEAR,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ENTITIES_SPAWN,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ENTITIES_TAME,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_TURTLES_BREED
+            )
+
+            if (model.branches.isNotEmpty() && nodeType != null && nodeType in resumableTypes) {
                 Services.questService.resumeBranch(player, model)
             }
         }

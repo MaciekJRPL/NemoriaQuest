@@ -16,29 +16,22 @@ import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
 import net.nemoria.quest.core.Services
 import net.nemoria.quest.runtime.ChatHideService
 import net.nemoria.quest.runtime.ChatHistoryManager
+import net.nemoria.quest.runtime.ChatMessageDeduplicator
 import org.bukkit.entity.Player
-import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 
 class ChatHidePacketListener : PacketListenerAbstract(PacketListenerPriority.NORMAL) {
     private val gson = GsonComponentSerializer.gson()
     private val plain = PlainTextComponentSerializer.plainText()
 
-    private data class SeenEntry(val key: String, val time: Long)
-
-    private val recent: MutableMap<UUID, ArrayDeque<SeenEntry>> = ConcurrentHashMap()
-    private val dedupWindowMs = 250L
-    private val maxSeen = 32
-
     override fun onPacketSend(event: PacketSendEvent) {
         val player = event.getPlayer<Player>() ?: return
         val id = player.uniqueId
-        val hidden = ChatHideService.isHidden(id) || Services.questService.hasDiverge(player)
+        val hidden = ChatHideService.isHidden(id) ||
+            ChatHideService.isDialogActive(id) ||
+            Services.questService.hasDiverge(player)
         if (!hidden) return
         val type = event.packetType ?: return
         val (component, json) = resolveComponent(type, event) ?: return
-        val textKey = plain.serialize(component)
-        if (!recordMessage(id, type.name, textKey)) return
 
         if (ChatHideService.consumeJson(id, json) ||
             ChatHideService.consumeExact(id) ||
@@ -46,6 +39,14 @@ class ChatHidePacketListener : PacketListenerAbstract(PacketListenerPriority.NOR
         ) {
             return
         }
+
+        val plainText = plain.serialize(component)
+        val dedupToken = if (plainText.isNotBlank()) {
+            "${type.name}:$plainText"
+        } else {
+            "${type.name}:$json"
+        }
+        if (!ChatMessageDeduplicator.shouldProcess(id, dedupToken)) return
 
         ChatHistoryManager.append(id, component)
         ChatHideService.bufferMessage(id, json)
@@ -76,21 +77,9 @@ class ChatHidePacketListener : PacketListenerAbstract(PacketListenerPriority.NOR
             else -> null
         }
     }
-
-    private fun recordMessage(playerId: UUID, typeName: String, textKey: String): Boolean {
-        val key = "$typeName:$textKey"
-        val now = System.currentTimeMillis()
-        val queue = recent.computeIfAbsent(playerId) { ArrayDeque() }
-        val duplicate = queue.any { it.key == key && now - it.time <= dedupWindowMs }
-        if (duplicate) return false
-        queue.addLast(SeenEntry(key, now))
-        while (queue.size > maxSeen) queue.removeFirst()
-        return true
-    }
-
     override fun onPacketReceive(event: PacketReceiveEvent) {
         val player = event.getPlayer<Player>() ?: return
-        val hidden = ChatHideService.isHidden(player.uniqueId)
+        val hidden = ChatHideService.isHidden(player.uniqueId) || ChatHideService.isDialogActive(player.uniqueId)
         val divergeAwaited = Services.questService.hasDiverge(player)
         if (!hidden || divergeAwaited) return
         val type = event.packetType ?: return

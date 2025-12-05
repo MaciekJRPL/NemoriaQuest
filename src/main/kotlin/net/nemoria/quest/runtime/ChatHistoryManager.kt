@@ -6,20 +6,29 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 object ChatHistoryManager {
+    private data class Entry(val seq: Long, val component: Component)
+
     private const val MAX_SIZE = 100
-    private val history: MutableMap<UUID, ArrayDeque<Component>> = ConcurrentHashMap()
+    private val history: MutableMap<UUID, ArrayDeque<Entry>> = ConcurrentHashMap()
     private val skipNext: MutableMap<UUID, Int> = ConcurrentHashMap()
+    private val counters: MutableMap<UUID, Long> = ConcurrentHashMap()
 
     fun append(playerId: UUID, component: Component) {
         if (consumeSkip(playerId)) return
+        val nextSeq = counters.compute(playerId) { _, prev -> (prev ?: 0L) + 1L }!!
         val deque = history.computeIfAbsent(playerId) { ArrayDeque() }
-        deque.addLast(component)
+        deque.addLast(Entry(nextSeq, component))
         while (deque.size > MAX_SIZE) {
             deque.removeFirst()
         }
     }
 
-    fun history(playerId: UUID): List<Component> = ArrayList(history[playerId] ?: emptyList())
+    fun history(playerId: UUID): List<Component> = history[playerId]?.map { it.component } ?: emptyList()
+
+    fun lastSequence(playerId: UUID): Long = counters[playerId] ?: 0L
+
+    fun historySince(playerId: UUID, sequence: Long): List<Component> =
+        history[playerId]?.filter { it.seq > sequence }?.map { it.component } ?: emptyList()
 
     fun skipNextMessages(playerId: UUID, count: Int = 1) {
         if (count <= 0) return

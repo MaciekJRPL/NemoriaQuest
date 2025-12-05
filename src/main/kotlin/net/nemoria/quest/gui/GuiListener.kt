@@ -5,33 +5,34 @@ import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
 import org.bukkit.event.inventory.InventoryClickEvent
-import org.bukkit.event.inventory.InventoryType
-import org.bukkit.inventory.InventoryHolder
 
 class GuiListener : Listener {
     @EventHandler
     fun onClick(event: InventoryClickEvent) {
-        val holder = event.inventory.holder
-        if (holder !is InventoryHolder || holder.javaClass.name.startsWith("org.bukkit.inventory")) return
-        event.isCancelled = true
         val player = event.whoClicked as? Player ?: return
+        val topHolder = event.view.topInventory.holder
         val manager = Services.guiManager
-        when (holder) {
+        when (topHolder) {
             is GuiManager.ListHolder -> {
+                event.isCancelled = true
+                if (event.clickedInventory != event.view.topInventory) return
                 val item = event.currentItem ?: return
                 val questId = manager.questFromItem(item) ?: return
                 if (event.click.isRightClick) {
                     val active = Services.questService.activeQuests(player).contains(questId)
                     if (active) Services.questService.stopQuest(player, questId, complete = false) else Services.questService.startQuest(player, questId)
-                    manager.openList(player, holder.config, holder.filterActive, holder.page)
+                    manager.openList(player, topHolder.config, topHolder.filterActive, topHolder.page)
                 } else if (event.click.isLeftClick) {
                     Services.storage.questModelRepo.findById(questId)?.let { manager.openDetail(player, it) }
                 }
             }
             is GuiManager.DetailHolder -> {
+                event.isCancelled = true
+                if (event.clickedInventory != event.view.topInventory) return
                 // LPM anywhere wraca do listy
                 manager.openList(player, Services.guiDefault, filterActive = false)
             }
+            else -> return
         }
     }
 }

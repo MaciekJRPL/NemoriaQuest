@@ -40,3 +40,5 @@ permissions:
     default: op
   nemoriaquest.command.gui:
     default: true
+  nemoriaquest.command.goto:
+    default: op

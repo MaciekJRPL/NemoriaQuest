@@ -85,8 +85,56 @@ class QuestService(
 
     fun questInfo(id: String): QuestModel? = questRepo.findById(id)
 
+    fun gotoNode(player: org.bukkit.entity.Player, questId: String, branchId: String, nodeId: String): Boolean {
+        val data = userRepo.load(player.uniqueId)
+        if (!data.activeQuests.contains(questId)) return false
+        val model = questRepo.findById(questId) ?: return false
+        if (!model.branches.containsKey(branchId)) return false
+        if (model.branches[branchId]?.objects?.containsKey(nodeId) != true) return false
+        updateBranchState(player, questId, branchId, nodeId)
+        return branchRuntime.forceGoto(player, questId, branchId, nodeId)
+    }
+
     fun completeQuest(player: OfflinePlayer, questId: String) {
         finishOutcome(player, questId, "SUCCESS")
+    }
+
+    private fun progressKey(branchId: String, nodeId: String, goalId: String? = null): String =
+        if (goalId.isNullOrBlank()) "$branchId:$nodeId" else "$branchId:$nodeId:$goalId"
+
+    internal fun saveNodeProgress(player: OfflinePlayer, questId: String, branchId: String, nodeId: String, value: Double, goalId: String? = null) {
+        val data = userRepo.load(player.uniqueId)
+        val qp = data.progress[questId] ?: return
+        qp.nodeProgress[progressKey(branchId, nodeId, goalId)] = value
+        userRepo.save(data)
+    }
+
+    internal fun loadNodeProgress(player: OfflinePlayer, questId: String, branchId: String, nodeId: String, goalId: String? = null): Double {
+        val data = userRepo.load(player.uniqueId)
+        val qp = data.progress[questId] ?: return 0.0
+        return qp.nodeProgress[progressKey(branchId, nodeId, goalId)] ?: 0.0
+    }
+
+    internal fun loadNodeGoalProgress(player: OfflinePlayer, questId: String, branchId: String, nodeId: String): Map<String, Double> {
+        val data = userRepo.load(player.uniqueId)
+        val qp = data.progress[questId] ?: return emptyMap()
+        val prefix = progressKey(branchId, nodeId)
+        return qp.nodeProgress.filterKeys { it.startsWith("$prefix:") }.mapKeys { it.key.removePrefix("$prefix:") }
+    }
+
+    internal fun clearNodeProgress(player: OfflinePlayer, questId: String, branchId: String, nodeId: String) {
+        val data = userRepo.load(player.uniqueId)
+        val qp = data.progress[questId] ?: return
+        val prefix = progressKey(branchId, nodeId)
+        qp.nodeProgress.keys.removeIf { it == prefix || it.startsWith("$prefix:") }
+        userRepo.save(data)
+    }
+
+    internal fun clearAllNodeProgress(player: OfflinePlayer, questId: String) {
+        val data = userRepo.load(player.uniqueId)
+        val qp = data.progress[questId] ?: return
+        qp.nodeProgress.clear()
+        userRepo.save(data)
     }
 
     fun completeObjective(player: OfflinePlayer, questId: String, objectiveId: String) {
@@ -245,6 +293,75 @@ class QuestService(
 
     fun handleSneak(player: Player) {
         branchRuntime.handleSneakResume(player)
+    }
+
+    internal fun handlePlayerBlockEvent(
+        player: Player,
+        kind: net.nemoria.quest.runtime.BranchRuntimeManager.BlockEventType,
+        block: org.bukkit.block.Block,
+        action: String? = null,
+        item: org.bukkit.inventory.ItemStack? = null,
+        placedByPlayer: Boolean = false,
+        spawnerType: String? = null,
+        treeType: String? = null
+    ) {
+        branchRuntime.handlePlayerBlockEvent(
+            player,
+            kind,
+            block,
+            action,
+            item,
+            placedByPlayer,
+            spawnerType,
+            treeType
+        )
+    }
+
+    internal fun handlePlayerEntityEvent(
+        player: Player,
+        kind: net.nemoria.quest.runtime.BranchRuntimeManager.EntityEventType,
+        entity: org.bukkit.entity.Entity?,
+        damager: org.bukkit.entity.Entity? = null,
+        entityTypeHint: String? = null
+    ) {
+        branchRuntime.handlePlayerEntityEvent(player, kind, entity, damager, entityTypeHint)
+    }
+
+    internal fun handlePlayerItemEvent(
+        player: Player,
+        kind: net.nemoria.quest.runtime.BranchRuntimeManager.ItemEventType,
+        item: org.bukkit.inventory.ItemStack?,
+        inventoryType: String? = null,
+        slot: Int? = null,
+        villagerId: java.util.UUID? = null
+    ) {
+        branchRuntime.handlePlayerItemEvent(player, kind, item, inventoryType, slot, villagerId)
+    }
+
+    internal fun handlePlayerMovementEvent(
+        player: Player,
+        kind: net.nemoria.quest.runtime.BranchRuntimeManager.MovementEventType,
+        delta: Double,
+        vehicleType: String? = null
+    ) {
+        branchRuntime.handleMovementEvent(player, kind, delta, vehicleType)
+    }
+
+    internal fun handlePlayerPhysicalEvent(
+        player: Player,
+        kind: net.nemoria.quest.runtime.BranchRuntimeManager.PhysicalEventType,
+        amount: Double,
+        detail: String? = null
+    ) {
+        branchRuntime.handlePhysicalEvent(player, kind, amount, detail)
+    }
+
+    internal fun handlePlayerMiscEvent(
+        player: Player,
+        kind: net.nemoria.quest.runtime.BranchRuntimeManager.MiscEventType,
+        detail: String? = null
+    ): Boolean {
+        return branchRuntime.handleMiscEvent(player, kind, detail)
     }
 
     fun resumeBranch(player: Player, model: QuestModel) {

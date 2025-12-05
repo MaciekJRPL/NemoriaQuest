@@ -13,6 +13,6 @@ data class DivergeChatSession(
     var lastDialog: List<String> = emptyList(),
     val originalHistory: List<Component> = emptyList(),
     val greyHistory: List<Component> = emptyList(),
-    val baselineSize: Int = 0,
+    val baselineSeq: Long = 0L,
     val syntheticMessages: MutableSet<String> = mutableSetOf()
 )

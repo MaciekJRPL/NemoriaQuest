@@ -6,18 +6,25 @@ Projekt jest inspirowany QuestCreatorem, ale cała logika i formaty są napisane
 ## Najważniejsze cechy
 
 - **Opis questów w YAML** – czytelne pliki w `content/quests`, łatwe do edycji i wersjonowania.
-- **Zaawansowany system obiektów (quest objects)** – działanie kroków questa konfigurowane przez typy:
+- **Zaawansowany system obiektów (quest objects)** - działanie kroków questa konfigurowane przez typy:
   - `SERVER_ACTIONS` (wiadomości, dźwięki, komendy, timery),
   - `SERVER_ITEMS_*` (give/take/drop/modify/clear),
   - `SERVER_ENTITIES_*` (spawn/kill/damage/teleport),
   - `SERVER_BLOCKS_*`, `SERVER_FIREWORKS_*`, `SERVER_LIGHTNING_*`,
   - `SERVER_LOGIC_*` (pieniądze, punkty, zmienne, XP),
   - `NONE`, `GROUP`, `RANDOM`, `LOGIC_SWITCH`, `CONDITIONS_SWITCH`,
-  - `NPC_INTERACT` (Citizens), `DIVERGE_CHAT`, `DIVERGE_GUI`, `DIVERGE_OBJECTS`.
+  - `NPC_INTERACT` (Citizens), `DIVERGE_CHAT`, `DIVERGE_GUI`, `DIVERGE_OBJECTS`,
+  - typy graczowe (pełna lista):
+    - Bloki: `PLAYER_BLOCKS_BREAK/PLACE/INTERACT/IGNITE/STRIP`, `PLAYER_BLOCK_FARM`, `PLAYER_BLOCK_FROST_WALK`, `PLAYER_MAKE_PATHS`, `PLAYER_SPAWNER_PLACE`, `PLAYER_TREE_GROW`.
+    - Entity: `PLAYER_ENTITIES_BREED/INTERACT/CATCH/DAMAGE/DEATH_NEARBY/DISMOUNT/GET_DAMAGED/KILL/MOUNT/SHEAR/SPAWN/TAME`, `PLAYER_TURTLES_BREED`.
+    - Itemy: `PLAYER_ITEMS_ACQUIRE/BREW/CONSUME/CONTAINER_PUT/CONTAINER_TAKE/CRAFT/DROP/ENCHANT/FISH/INTERACT/MELT/PICKUP/REPAIR/REQUIRE/THROW/TRADE`.
+    - Ruch: `PLAYER_MOVE`, `PLAYER_MOVE_BY_FOOT_DISTANCE`, `PLAYER_WALK_DISTANCE`, `PLAYER_SPRINT_DISTANCE`, `PLAYER_SWIM_DISTANCE`, `PLAYER_ELYTRA_FLY_DISTANCE`, `PLAYER_ELYTRA_LAND`, `PLAYER_FALL_DISTANCE`, `PLAYER_HORSE_JUMP`, `PLAYER_JUMP`, `PLAYER_VEHICLE_DISTANCE`, `PLAYER_POSITION`.
+    - Fizyczne: `PLAYER_BED_ENTER/LEAVE`, `PLAYER_BUCKET_FILL`, `PLAYER_BURN`, `PLAYER_DIE`, `PLAYER_GAIN_HEALTH`, `PLAYER_GAIN_XP`, `PLAYER_PORTAL_ENTER/LEAVE`, `PLAYER_SHOOT_PROJECTILE`, `PLAYER_SNEAK`, `PLAYER_TAKE_DAMAGE`, `PLAYER_TOGGLE_SNEAK`, `PLAYER_VEHICLE_ENTER/LEAVE`.
+    - Misc: `PLAYER_CHAT` (whitelist/blacklist/regex, zapis do zmiennej), `PLAYER_CONNECT`, `PLAYER_DISCONNECT`, `PLAYER_RESPAWN`, `PLAYER_WAIT`, `PLAYER_ACHIEVEMENT_AWARD`.
 - **Pełne wsparcie zmiennych**:
-  - zmienne modelu (`model_variables`) – trwają tylko w danym quescie (`{mvariable:nazwa}`),
-  - zmienne użytkownika – trwałe per gracz (`{variable:nazwa}`),
-  - zmienne serwerowe – współdzielone (`{server_variable:nazwa}`),
+  - zmienne modelu (`model_variables`) - trwają tylko w danym quescie (`{mvariable:nazwa}`),
+  - zmienne użytkownika - trwałe per gracz (`{variable:nazwa}`),
+  - zmienne serwerowe - współdzielone (`{server_variable:nazwa}`),
   - zmienne globalne – makra (`{gvariable:nazwa}`).
 - **Integracje**:
   - PlaceholderAPI – placeholder `%nemoriaquest_objective_detail%`,
@@ -34,6 +41,8 @@ Projekt jest inspirowany QuestCreatorem, ale cała logika i formaty są napisane
 - **Scoreboard**:
   - prosty scoreboard boczny z bieżącym celem,
   - włączany globalnie w `config.yml` i per-quest w `progress_notify.scoreboard`.
+- **Quest demo**: w katalogu `content/quests/mega_test_all.yml` znajduje się przykładowy quest pokrywający wszystkie typy obiektów dodane w pluginie (do szybkich testów).
+- **Uwagi implementacyjne**: szczegółowe ograniczenia i niuanse działania (np. sposób liczenia dystansu, walidacja czatu, brak pełnego matchera NBT) są opisane w `UWAGI.md`.
 
 ## Wymagania
 
@@ -217,4 +226,3 @@ Możesz używać tego placeholdera w:
 Projekt NemoriaQuest jest udostępniany na otwartej licencji (np. MIT lub Apache 2.0 – zgodnie z plikiem `LICENSE` w repozytorium).
 
 Zewnętrzne zależności (Paper API, PlaceholderAPI, itp.) mają swoje własne licencje – korzystając z NemoriaQuest na serwerze masz obowiązek respektować także ich warunki.
-

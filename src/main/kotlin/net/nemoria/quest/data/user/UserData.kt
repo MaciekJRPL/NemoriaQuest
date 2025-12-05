@@ -17,7 +17,8 @@ data class QuestProgress(
     var currentNodeId: String? = null,
     val randomHistory: MutableSet<String> = mutableSetOf(),
     val groupState: MutableMap<String, GroupProgress> = mutableMapOf(),
-    val divergeCounts: MutableMap<String, Int> = mutableMapOf()
+    val divergeCounts: MutableMap<String, Int> = mutableMapOf(),
+    val nodeProgress: MutableMap<String, Double> = mutableMapOf() // key: branchId:nodeId -> progress value
 )
 
 data class ObjectiveState(

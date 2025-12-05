@@ -39,6 +39,10 @@ command:
     usage: "<prefix><secondary>Usage: <primary>/nq debug <on|off>"
     enabled: "<prefix><success>Debug enabled."
     disabled: "<prefix><secondary>Debug disabled."
+  goto:
+    usage: "<prefix><secondary>Usage: <primary>/nq goto <questId> <branchId> <nodeId>"
+    fail: "<prefix><error>Cannot jump to <primary>{quest}:{branch}:{node}. Check quest, branch, node and active status."
+    done: "<prefix><success>Jumped to <primary>{quest}:{branch}:{node}."
 scoreboard:
   no_objective: "<secondary>No objective"
   empty: "<secondary>Nothing to display"

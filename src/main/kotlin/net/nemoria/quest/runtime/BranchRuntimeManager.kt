@@ -8,6 +8,8 @@ import net.nemoria.quest.data.user.GroupProgress
 import net.nemoria.quest.quest.*
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.minimessage.MiniMessage
+import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
 import org.bukkit.GameMode
 import org.bukkit.NamespacedKey
@@ -19,6 +21,8 @@ import org.bukkit.entity.AbstractHorse
 import org.bukkit.entity.Horse
 import org.bukkit.entity.Sheep
 import org.bukkit.inventory.ItemStack
+import org.bukkit.block.Block
+import org.bukkit.Material
 import org.bukkit.persistence.PersistentDataType
 import org.bukkit.plugin.java.JavaPlugin
 import org.bukkit.potion.PotionEffect
@@ -27,6 +31,7 @@ import org.bukkit.scheduler.BukkitRunnable
 import java.io.File
 import java.util.UUID
 import kotlin.sequences.asSequence
+import kotlin.math.sqrt
 
 class BranchRuntimeManager(
     private val plugin: JavaPlugin,
@@ -39,6 +44,89 @@ class BranchRuntimeManager(
     private val pendingNavigations: MutableMap<UUID, ActionContinuation> = mutableMapOf()
     private val particleScripts: MutableMap<String, ParticleScript> = mutableMapOf()
     private val guiSessions: MutableMap<UUID, DivergeGuiSession> = mutableMapOf()
+    private val gson = GsonComponentSerializer.gson()
+    private val legacySerializer = LegacyComponentSerializer.legacySection()
+    private val historyNewline = Component.newline()
+
+    companion object {
+        private const val GREY_HISTORY_LIMIT = 40
+        private fun progressKey(branchId: String, nodeId: String): String = "$branchId:$nodeId"
+    }
+
+    internal enum class BlockEventType { BREAK, PLACE, INTERACT, IGNITE, FROST_WALK, FARM, STRIP, MAKE_PATH, SPAWNER_PLACE, TREE_GROW }
+    internal enum class EntityEventType {
+        BREED,
+        INTERACT,
+        CATCH,
+        DAMAGE,
+        DEATH_NEARBY,
+        DISMOUNT,
+        GET_DAMAGED,
+        KILL,
+        MOUNT,
+        SHEAR,
+        SPAWN,
+        TAME,
+        TURTLE_BREED
+    }
+    internal enum class ItemEventType {
+        ACQUIRE,
+        BREW,
+        CONSUME,
+        CONTAINER_PUT,
+        CONTAINER_TAKE,
+        CRAFT,
+        DROP,
+        ENCHANT,
+        FISH,
+        INTERACT,
+        MELT,
+        PICKUP,
+        REPAIR,
+        REQUIRE,
+        THROW,
+        TRADE
+    }
+
+    internal enum class MovementEventType {
+        MOVE,
+        WALK,
+        SPRINT,
+        FOOT,
+        SWIM,
+        GLIDE,
+        FALL,
+        VEHICLE,
+        HORSE_JUMP,
+        JUMP,
+        LAND
+    }
+
+    internal enum class PhysicalEventType {
+        BED_ENTER,
+        BED_LEAVE,
+        BUCKET_FILL,
+        BURN,
+        DIE,
+        GAIN_HEALTH,
+        GAIN_XP,
+        PORTAL_ENTER,
+        PORTAL_LEAVE,
+        SHOOT_PROJECTILE,
+        SNEAK_TIME,
+        TAKE_DAMAGE,
+        TOGGLE_SNEAK,
+        VEHICLE_ENTER,
+        VEHICLE_LEAVE
+    }
+
+    internal enum class MiscEventType {
+        CONNECT,
+        DISCONNECT,
+        RESPAWN,
+        CHAT,
+        ACHIEVEMENT
+    }
 
     fun hasDiverge(player: OfflinePlayer): Boolean = divergeSessions.containsKey(player.uniqueId)
 
@@ -67,16 +155,53 @@ class BranchRuntimeManager(
         }
     }
 
+    fun forceGoto(player: OfflinePlayer, questId: String, branchId: String, nodeId: String): Boolean {
+        val model = questService.questInfo(questId) ?: return false
+        val branch = model.branches[branchId] ?: return false
+        if (!branch.objects.containsKey(nodeId)) return false
+        val existing = sessions[player.uniqueId]
+        if (existing != null && existing.questId != questId) {
+            stop(player)
+        }
+        val session = sessions.getOrPut(player.uniqueId) { BranchSession(questId, branchId, nodeId) }
+        session.branchId = branchId
+        session.nodeId = nodeId
+        session.timeLimitTask?.cancel()
+        session.waitTasks.values.forEach { it.cancel() }
+        session.waitTasks.clear()
+        // wyczyść progres (debugowy przeskok)
+        session.blockProgress.clear()
+        session.blockCounted.clear()
+        session.movementProgress.clear()
+        session.physicalProgress.clear()
+        session.miscProgress.clear()
+        session.itemProgress.clear()
+        session.entityProgress.clear()
+        session.positionActionbarHint.clear()
+        questService.clearAllNodeProgress(player, model.id)
+        val hadDialog = divergeSessions.remove(player.uniqueId) != null
+        if (hadDialog) {
+            ChatHideService.flushBufferedToHistory(player.uniqueId)
+            ChatHideService.endDialog(player.uniqueId)
+        }
+        questService.updateBranchState(player, model.id, branchId, nodeId)
+        runNode(player, model, branchId, nodeId, 0)
+        return true
+    }
+
     fun stop(player: OfflinePlayer) {
-        sessions.remove(player.uniqueId)?.timeLimitTask?.cancel()
-        divergeSessions.remove(player.uniqueId)
+        sessions.remove(player.uniqueId)?.let { sess ->
+            sess.timeLimitTask?.cancel()
+            sess.waitTasks.values.forEach { it.cancel() }
+        }
+        val hadDialog = divergeSessions.remove(player.uniqueId) != null
         val bukkit = player.player
         if (bukkit != null) {
             ChatHideService.flushBufferedToHistory(bukkit.uniqueId)
-            ChatHideService.show(bukkit.uniqueId)
+            if (hadDialog) ChatHideService.endDialog(bukkit.uniqueId) else ChatHideService.show(bukkit.uniqueId)
         } else {
             ChatHideService.flushBufferedToHistory(player.uniqueId)
-            ChatHideService.show(player.uniqueId)
+            if (hadDialog) ChatHideService.endDialog(player.uniqueId) else ChatHideService.show(player.uniqueId)
         }
         pendingSneaks.remove(player.uniqueId)
         pendingNavigations.remove(player.uniqueId)
@@ -316,11 +441,15 @@ class BranchRuntimeManager(
             }
             QuestObjectNodeType.DIVERGE_CHAT -> {
                 sessions[player.uniqueId]?.nodeId = node.id
+                ChatHideService.flushBufferedToHistory(p.uniqueId)
                 val originalHistory = ChatHistoryManager.history(p.uniqueId)
-                val greyHistory = originalHistory.map { ChatHistoryManager.greyOut(it) }
-                if (node.hideChat || node.dialog) {
-                    ChatHideService.hide(player.uniqueId)
+                val limitedHistory = originalHistory.takeLast(GREY_HISTORY_LIMIT)
+                val greyHistory = limitedHistory.map { ChatHistoryManager.greyOut(it) }
+                val hiding = node.hideChat || node.dialog
+                if (hiding) {
+                    ChatHideService.beginDialog(player.uniqueId)
                 }
+                val baselineSeq = ChatHistoryManager.lastSequence(p.uniqueId)
                 divergeSessions[player.uniqueId] = DivergeChatSession(
                     node.choices,
                     intro = (node.startNotify?.message ?: emptyList()) + node.message,
@@ -330,9 +459,102 @@ class BranchRuntimeManager(
                     lastRenderAt = 0L,
                     originalHistory = originalHistory,
                     greyHistory = greyHistory,
-                    baselineSize = originalHistory.size
+                    baselineSeq = baselineSeq
                 )
                 sendDivergeChoices(p, node.choices, highlightIdx = 1, storeState = true)
+            }
+            QuestObjectNodeType.PLAYER_ITEMS_ACQUIRE,
+            QuestObjectNodeType.PLAYER_ITEMS_BREW,
+            QuestObjectNodeType.PLAYER_ITEMS_CONSUME,
+            QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_PUT,
+            QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_TAKE,
+            QuestObjectNodeType.PLAYER_ITEMS_CRAFT,
+            QuestObjectNodeType.PLAYER_ITEMS_DROP,
+            QuestObjectNodeType.PLAYER_ITEMS_ENCHANT,
+            QuestObjectNodeType.PLAYER_ITEMS_FISH,
+            QuestObjectNodeType.PLAYER_ITEMS_INTERACT,
+            QuestObjectNodeType.PLAYER_ITEMS_MELT,
+            QuestObjectNodeType.PLAYER_ITEMS_PICKUP,
+            QuestObjectNodeType.PLAYER_ITEMS_REPAIR,
+            QuestObjectNodeType.PLAYER_ITEMS_REQUIRE,
+            QuestObjectNodeType.PLAYER_ITEMS_THROW,
+            QuestObjectNodeType.PLAYER_ITEMS_TRADE,
+            QuestObjectNodeType.PLAYER_MOVE,
+            QuestObjectNodeType.PLAYER_MOVE_BY_FOOT_DISTANCE,
+            QuestObjectNodeType.PLAYER_POSITION,
+            QuestObjectNodeType.PLAYER_SWIM_DISTANCE,
+            QuestObjectNodeType.PLAYER_ELYTRA_FLY_DISTANCE,
+            QuestObjectNodeType.PLAYER_ELYTRA_LAND,
+            QuestObjectNodeType.PLAYER_FALL_DISTANCE,
+            QuestObjectNodeType.PLAYER_HORSE_JUMP,
+            QuestObjectNodeType.PLAYER_JUMP,
+            QuestObjectNodeType.PLAYER_SPRINT_DISTANCE,
+            QuestObjectNodeType.PLAYER_VEHICLE_DISTANCE,
+            QuestObjectNodeType.PLAYER_WALK_DISTANCE,
+            QuestObjectNodeType.PLAYER_BED_ENTER,
+            QuestObjectNodeType.PLAYER_BED_LEAVE,
+            QuestObjectNodeType.PLAYER_BUCKET_FILL,
+            QuestObjectNodeType.PLAYER_BURN,
+            QuestObjectNodeType.PLAYER_DIE,
+            QuestObjectNodeType.PLAYER_GAIN_HEALTH,
+            QuestObjectNodeType.PLAYER_GAIN_XP,
+            QuestObjectNodeType.PLAYER_PORTAL_ENTER,
+            QuestObjectNodeType.PLAYER_PORTAL_LEAVE,
+            QuestObjectNodeType.PLAYER_SHOOT_PROJECTILE,
+            QuestObjectNodeType.PLAYER_SNEAK,
+            QuestObjectNodeType.PLAYER_TAKE_DAMAGE,
+            QuestObjectNodeType.PLAYER_TOGGLE_SNEAK,
+            QuestObjectNodeType.PLAYER_VEHICLE_ENTER,
+            QuestObjectNodeType.PLAYER_VEHICLE_LEAVE,
+            QuestObjectNodeType.PLAYER_ACHIEVEMENT_AWARD,
+            QuestObjectNodeType.PLAYER_CHAT,
+            QuestObjectNodeType.PLAYER_CONNECT,
+            QuestObjectNodeType.PLAYER_DISCONNECT,
+            QuestObjectNodeType.PLAYER_RESPAWN,
+            QuestObjectNodeType.PLAYER_ENTITIES_BREED,
+            QuestObjectNodeType.PLAYER_ENTITIES_INTERACT,
+            QuestObjectNodeType.PLAYER_ENTITIES_CATCH,
+            QuestObjectNodeType.PLAYER_ENTITIES_DAMAGE,
+            QuestObjectNodeType.PLAYER_ENTITIES_DEATH_NEARBY,
+            QuestObjectNodeType.PLAYER_ENTITIES_DISMOUNT,
+            QuestObjectNodeType.PLAYER_ENTITIES_GET_DAMAGED -> {
+                sessions[player.uniqueId]?.nodeId = node.id
+                preloadNodeProgress(player, model, branchId, node)
+            }
+            QuestObjectNodeType.PLAYER_ENTITIES_KILL,
+            QuestObjectNodeType.PLAYER_ENTITIES_MOUNT,
+            QuestObjectNodeType.PLAYER_ENTITIES_SHEAR,
+            QuestObjectNodeType.PLAYER_ENTITIES_SPAWN,
+            QuestObjectNodeType.PLAYER_ENTITIES_TAME,
+            QuestObjectNodeType.PLAYER_TURTLES_BREED,
+            QuestObjectNodeType.PLAYER_BLOCKS_BREAK,
+            QuestObjectNodeType.PLAYER_BLOCKS_PLACE,
+            QuestObjectNodeType.PLAYER_BLOCKS_INTERACT,
+            QuestObjectNodeType.PLAYER_BLOCKS_IGNITE,
+            QuestObjectNodeType.PLAYER_BLOCKS_STRIP,
+            QuestObjectNodeType.PLAYER_BLOCK_FARM,
+            QuestObjectNodeType.PLAYER_BLOCK_FROST_WALK,
+            QuestObjectNodeType.PLAYER_MAKE_PATHS,
+            QuestObjectNodeType.PLAYER_SPAWNER_PLACE,
+            QuestObjectNodeType.PLAYER_TREE_GROW -> {
+                sessions[player.uniqueId]?.nodeId = node.id
+                preloadNodeProgress(player, model, branchId, node)
+            }
+            QuestObjectNodeType.PLAYER_WAIT -> {
+                sessions[player.uniqueId]?.nodeId = node.id
+                val seconds = (node.waitGoalSeconds ?: node.count.toLong()).coerceAtLeast(0)
+                if (seconds > 0) {
+                    val task = object : BukkitRunnable() {
+                        override fun run() {
+                            val gotoRaw = node.goto ?: return
+                            val target = normalizeTarget(gotoRaw)
+                            runNode(player, model, branchId, target, 0)
+                        }
+                    }.runTaskLater(plugin, seconds * 20)
+                    sessions[player.uniqueId]?.waitTasks?.put(node.id, task)
+                } else {
+                    node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                }
             }
         }
     }
@@ -767,24 +989,12 @@ class BranchRuntimeManager(
         val bukkit = player.player
         if (bukkit != null && diverge != null) {
             ChatHideService.flushBufferedToHistory(bukkit.uniqueId)
-            val currentHistory = ChatHistoryManager.history(bukkit.uniqueId)
-            val gson = net.kyori.adventure.text.serializer.gson.GsonComponentSerializer.gson()
-            val newMessages: List<Component> =
-                if (currentHistory.size > diverge.baselineSize) {
-                    currentHistory.drop(diverge.baselineSize).filter { msg ->
-                        val json = gson.serialize(msg)
-                        !diverge.syntheticMessages.contains(json)
-                    }
-                } else emptyList()
+            val newMessages = ChatHistoryManager.historySince(bukkit.uniqueId, diverge.baselineSeq)
             val mergedHistory = diverge.originalHistory + newMessages
             clearChatWindow(bukkit, 100)
-            val finalHistory = mergedHistory.filter { msg ->
-                val json = gson.serialize(msg)
-                !diverge.syntheticMessages.contains(json)
-            }
-            replayHistory(bukkit, finalHistory)
+            replayHistory(bukkit, mergedHistory, trackSynthetic = true)
         }
-        ChatHideService.show(player.uniqueId)
+        ChatHideService.endDialog(player.uniqueId)
         val gotoRaw = choice.goto ?: return
         val target = normalizeTarget(gotoRaw)
         net.nemoria.quest.core.DebugLog.log("Diverge choice idx=$choiceIndex quest=${model.id} node=${node.id} -> $target")
@@ -807,37 +1017,27 @@ class BranchRuntimeManager(
             session.lastRenderAt = System.currentTimeMillis()
             val clearLines = 100
             clearChatWindow(player, clearLines)
-            replayHistory(player, session.greyHistory)
-            repeat(2) {
-                sendSyntheticMessage(player, Component.empty())
-            }
+            val historySlice = session.greyHistory.takeLast(GREY_HISTORY_LIMIT)
+            replayHistory(player, historySlice, trackSynthetic = true)
+            repeat(2) { sendSyntheticMessage(player, Component.empty(), trackSynthetic = true) }
         }
-        val legacy = net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer.legacySection()
-        val introLines = session?.intro?.map { legacy.deserialize(MessageFormatter.format(it)) } ?: emptyList()
+        val introLines = session?.intro?.map { legacySerializer.deserialize(MessageFormatter.format(it)) } ?: emptyList()
         val optionLines = choices.mapIndexed { idx, ch ->
             val prefixColor = if (idx + 1 == highlightIdx) "<red>> " else "<green>> "
             val formatted = MessageFormatter.format("$prefixColor${idx + 1}. ${ch.text}")
-            val comp = legacy.deserialize(formatted)
+            val comp = legacySerializer.deserialize(formatted)
             comp.clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/nq diverge ${idx + 1}"))
         }
         val hintRaw = net.nemoria.quest.core.Services.i18n.msg("chat_hint")
-        val hintComp = legacy.deserialize(MessageFormatter.format(hintRaw))
+        val hintComp = legacySerializer.deserialize(MessageFormatter.format(hintRaw))
 
         val allComps = introLines + optionLines + hintComp
-        val block = allComps.reduce { acc, c -> acc.append(net.kyori.adventure.text.Component.newline()).append(c) }
 
         val sendMenu: () -> Unit = {
-            val chatType = com.github.retrooper.packetevents.protocol.chat.ChatTypes.CHAT
-            val json = net.kyori.adventure.text.serializer.gson.GsonComponentSerializer.gson().serialize(block)
-            ChatHideService.allowJsonOnce(player.uniqueId, json)
-            divergeSessions[player.uniqueId]?.syntheticMessages?.add(json)
-            ChatHistoryManager.skipNextMessages(player.uniqueId)
-            val packet = com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSystemChatMessage(
-                chatType,
-                block
-            )
-            com.github.retrooper.packetevents.PacketEvents.getAPI().playerManager.sendPacket(player, packet)
-            session?.lastDialog = allComps.map { legacy.serialize(it) }
+            allComps.forEach { comp ->
+                sendSyntheticMessage(player, comp, trackSynthetic = true)
+            }
+            session?.lastDialog = allComps.map { legacySerializer.serialize(it) }
         }
 
         if (storeState) {
@@ -867,16 +1067,707 @@ class BranchRuntimeManager(
         }
     }
 
-    private fun replayHistory(player: org.bukkit.entity.Player, history: List<Component>) {
-        history.forEach { comp ->
-            sendSyntheticMessage(player, comp)
+    private fun sendAllowedComponent(player: org.bukkit.entity.Player, component: Component) {
+        player.sendMessage(component)
+    }
+
+    internal fun handlePlayerBlockEvent(
+        player: org.bukkit.entity.Player,
+        kind: BlockEventType,
+        block: Block,
+        action: String? = null,
+        item: ItemStack? = null,
+        placedByPlayer: Boolean = false,
+        spawnerType: String? = null,
+        treeType: String? = null
+    ) {
+        val session = sessions[player.uniqueId] ?: return
+        val model = questService.questInfo(session.questId) ?: return
+        val branch = model.branches[session.branchId] ?: return
+        val node = branch.objects[session.nodeId] ?: return
+        if (!isPlayerBlockNode(node.type)) return
+
+        val typeMatches = when (node.type) {
+            QuestObjectNodeType.PLAYER_BLOCKS_BREAK -> kind == BlockEventType.BREAK
+            QuestObjectNodeType.PLAYER_BLOCKS_PLACE -> kind == BlockEventType.PLACE
+            QuestObjectNodeType.PLAYER_BLOCKS_INTERACT -> kind == BlockEventType.INTERACT
+            QuestObjectNodeType.PLAYER_BLOCKS_IGNITE -> kind == BlockEventType.IGNITE
+            QuestObjectNodeType.PLAYER_BLOCKS_STRIP -> kind == BlockEventType.STRIP
+            QuestObjectNodeType.PLAYER_BLOCK_FARM -> kind == BlockEventType.FARM
+            QuestObjectNodeType.PLAYER_BLOCK_FROST_WALK -> kind == BlockEventType.FROST_WALK
+            QuestObjectNodeType.PLAYER_MAKE_PATHS -> kind == BlockEventType.MAKE_PATH
+            QuestObjectNodeType.PLAYER_SPAWNER_PLACE -> kind == BlockEventType.SPAWNER_PLACE
+            QuestObjectNodeType.PLAYER_TREE_GROW -> kind == BlockEventType.TREE_GROW
+            else -> true
+        }
+        if (!typeMatches) return
+
+        val clickOk = when (node.type) {
+            QuestObjectNodeType.PLAYER_BLOCKS_INTERACT -> matchesClick(node.blockClickType, action)
+            QuestObjectNodeType.PLAYER_BLOCKS_STRIP,
+            QuestObjectNodeType.PLAYER_BLOCK_FARM,
+            QuestObjectNodeType.PLAYER_MAKE_PATHS -> matchesClick("RIGHT_CLICK", action)
+            else -> true
+        }
+        if (!clickOk) return
+
+        if (!node.blockAllowPlayerBlocks && placedByPlayer) {
+            node.blockAllowPlayerBlocksMessage?.let { MessageFormatter.send(player, it) }
+            return
+        }
+
+        val locKey = block.locationKey()
+        val counted = session.blockCounted.getOrPut(node.id) { mutableSetOf() }
+        if (!node.blockAllowSameBlocks && counted.contains(locKey)) {
+            node.blockAllowSameBlocksMessage?.let { MessageFormatter.send(player, it) }
+            return
+        }
+
+        val goals = node.blockGoals.ifEmpty {
+            listOf(
+                BlockGoal(
+                    id = "default",
+                    types = emptyList(),
+                    states = emptyList(),
+                    statesRequiredCount = Int.MAX_VALUE,
+                    goal = node.count.toDouble().coerceAtLeast(1.0)
+                )
+            )
+        }
+
+        val targetBlock = if (kind == BlockEventType.IGNITE && block.type == Material.AIR && block.y > block.world.minHeight) {
+            block.world.getBlockAt(block.x, block.y - 1, block.z)
+        } else block
+        val blockType = targetBlock.type.name
+        val blockData = targetBlock.blockData.asString.lowercase()
+        var progressed = false
+        goals.forEach { goal ->
+            if (goal.types.isNotEmpty()) {
+                val matchType = goal.types.any { it.equals(blockType, true) }
+                if (!matchType) {
+                    DebugLog.log("BLOCK_SKIP type mismatch block=$blockType goalTypes=${goal.types} node=${node.id}")
+                    return@forEach
+                }
+            }
+            if (goal.states.isNotEmpty()) {
+                val matchedStates = goal.states.count { st -> blockData.contains(st.lowercase()) }
+                val required = if (goal.statesRequiredCount == Int.MAX_VALUE) goal.states.size else goal.statesRequiredCount
+                if (matchedStates < required) {
+                    DebugLog.log("BLOCK_SKIP state mismatch blockData=$blockData goalStates=${goal.states} node=${node.id}")
+                    return@forEach
+                }
+            }
+            if (node.type == QuestObjectNodeType.PLAYER_SPAWNER_PLACE && node.blockSpawnTypes.isNotEmpty()) {
+                val sp = spawnerType?.uppercase()
+                if (sp == null || node.blockSpawnTypes.none { it.equals(sp, true) }) return@forEach
+            }
+            if (node.type == QuestObjectNodeType.PLAYER_TREE_GROW && node.blockTreeType != null) {
+                val tree = normalizeTreeType(treeType)
+                if (tree == null || !node.blockTreeType.equals(tree, true)) return@forEach
+            }
+            if (node.type == QuestObjectNodeType.PLAYER_BLOCK_FARM && item != null) {
+                val matName = item.type.name
+                if (!matName.endsWith("_HOE")) return@forEach
+            }
+            if (node.type == QuestObjectNodeType.PLAYER_BLOCKS_STRIP && item != null) {
+                val matName = item.type.name
+                if (!matName.endsWith("_AXE")) return@forEach
+            }
+            if (node.type == QuestObjectNodeType.PLAYER_MAKE_PATHS && item != null) {
+                val matName = item.type.name
+                if (!matName.endsWith("_SHOVEL") && !matName.endsWith("_SPADE")) return@forEach
+            }
+            if (node.type == QuestObjectNodeType.PLAYER_BLOCK_FROST_WALK && kind != BlockEventType.FROST_WALK) return@forEach
+            if (node.type == QuestObjectNodeType.PLAYER_BLOCK_FARM && goal.types.isEmpty()) {
+                if (!isFarmable(blockType)) return@forEach
+            }
+            if (node.type == QuestObjectNodeType.PLAYER_MAKE_PATHS && goal.types.isEmpty()) {
+                if (!isPathable(blockType)) return@forEach
+            }
+
+            val progMap = session.blockProgress.getOrPut(node.id) { mutableMapOf() }
+            val current = progMap.getOrDefault(goal.id, 0.0)
+            progMap[goal.id] = current + 1.0
+            questService.saveNodeProgress(player, model.id, session.branchId, node.id, progMap[goal.id]!!, goal.id)
+            progressed = true
+        }
+
+        if (progressed) {
+            counted.add(locKey)
+        }
+
+        val progMap = session.blockProgress[node.id] ?: return
+        val allDone = goals.all { g -> (progMap[g.id] ?: 0.0) >= g.goal }
+        if (allDone) {
+            questService.clearNodeProgress(player, model.id, session.branchId, node.id)
+            val gotoRaw = node.goto ?: return
+            val target = normalizeTarget(gotoRaw)
+            runNode(player, model, session.branchId, target, 0)
         }
     }
 
-    private fun sendSyntheticMessage(player: org.bukkit.entity.Player, component: Component) {
+    private fun matchesClick(expected: String?, action: String?): Boolean {
+        if (expected.isNullOrBlank()) return true
+        if (action.isNullOrBlank()) return false
+        return expected.equals(action, true)
+    }
+
+    private fun isPlayerBlockNode(type: QuestObjectNodeType): Boolean =
+        when (type) {
+            QuestObjectNodeType.PLAYER_BLOCKS_BREAK,
+            QuestObjectNodeType.PLAYER_BLOCKS_PLACE,
+            QuestObjectNodeType.PLAYER_BLOCKS_INTERACT,
+            QuestObjectNodeType.PLAYER_BLOCKS_IGNITE,
+            QuestObjectNodeType.PLAYER_BLOCKS_STRIP,
+            QuestObjectNodeType.PLAYER_BLOCK_FARM,
+            QuestObjectNodeType.PLAYER_BLOCK_FROST_WALK,
+            QuestObjectNodeType.PLAYER_MAKE_PATHS,
+            QuestObjectNodeType.PLAYER_SPAWNER_PLACE,
+            QuestObjectNodeType.PLAYER_TREE_GROW -> true
+            else -> false
+        }
+
+    private fun isFarmable(blockType: String): Boolean =
+        when (blockType.uppercase()) {
+            "DIRT", "COARSE_DIRT", "ROOTED_DIRT", "GRASS_BLOCK", "GRASS_PATH", "DIRT_PATH" -> true
+            else -> false
+        }
+
+    private fun isPathable(blockType: String): Boolean =
+        when (blockType.uppercase()) {
+            // tylko bloki, które faktycznie mogą zmienić się w ścieżkę po kliknięciu łopatą
+            "DIRT", "COARSE_DIRT", "ROOTED_DIRT", "GRASS_BLOCK" -> true
+            else -> false
+        }
+
+    private fun Block.locationKey(): String =
+        "${location.world?.name}:${location.blockX}:${location.blockY}:${location.blockZ}"
+
+    internal fun handlePlayerEntityEvent(
+        player: org.bukkit.entity.Player,
+        kind: EntityEventType,
+        entity: org.bukkit.entity.Entity?,
+        damager: org.bukkit.entity.Entity? = null,
+        entityTypeHint: String? = null
+    ) {
+        val session = sessions[player.uniqueId] ?: return
+        val model = questService.questInfo(session.questId) ?: return
+        val branch = model.branches[session.branchId] ?: return
+        val node = branch.objects[session.nodeId] ?: return
+        if (!isPlayerEntityNode(node.type)) return
+
+        val counted = session.entityCounted.getOrPut(node.id) { mutableSetOf() }
+        val targetEntity = when (kind) {
+            EntityEventType.GET_DAMAGED -> damager ?: entity
+            else -> entity
+        }
+        val targetType = targetEntity?.type?.name ?: entityTypeHint
+        val entityId = targetEntity?.uniqueId
+        if (!node.entityAllowSame && entityId != null && counted.contains(entityId)) {
+            node.entityAllowSameMessage?.let { MessageFormatter.send(player, it) }
+            return
+        }
+
+        if (node.type == QuestObjectNodeType.PLAYER_ENTITIES_DEATH_NEARBY) {
+            val maxDist = node.entityMaxDistance ?: return
+            val distSq = player.location.distanceSquared((entity ?: return).location)
+            if (distSq > maxDist * maxDist) return
+        }
+
+        val goals = node.goals.ifEmpty {
+            listOf(EntityGoal(goal = node.count.toDouble().coerceAtLeast(1.0), id = "default"))
+        }
+
+        var progressed = false
+        goals.forEach { goal ->
+            val goalId = goal.id.ifBlank { "default" }
+            if (goal.types.isNotEmpty() || goal.names.isNotEmpty() || goal.colors.isNotEmpty() || goal.horseColors.isNotEmpty() || goal.horseStyles.isNotEmpty()) {
+                val match = when {
+                    targetEntity != null -> matchEntity(targetEntity, goal)
+                    targetType != null -> goal.types.any { it.equals(targetType, true) }
+                    else -> false
+                }
+                if (!match) return@forEach
+            }
+            when (node.type) {
+                QuestObjectNodeType.PLAYER_ENTITIES_KILL -> if (kind != EntityEventType.KILL) return@forEach
+                QuestObjectNodeType.PLAYER_ENTITIES_DAMAGE -> if (kind != EntityEventType.DAMAGE) return@forEach
+                QuestObjectNodeType.PLAYER_ENTITIES_GET_DAMAGED -> if (kind != EntityEventType.GET_DAMAGED) return@forEach
+                QuestObjectNodeType.PLAYER_ENTITIES_INTERACT -> if (kind != EntityEventType.INTERACT) return@forEach
+                QuestObjectNodeType.PLAYER_ENTITIES_CATCH -> if (kind != EntityEventType.CATCH) return@forEach
+                QuestObjectNodeType.PLAYER_ENTITIES_MOUNT -> if (kind != EntityEventType.MOUNT) return@forEach
+                QuestObjectNodeType.PLAYER_ENTITIES_DISMOUNT -> if (kind != EntityEventType.DISMOUNT) return@forEach
+                QuestObjectNodeType.PLAYER_ENTITIES_SHEAR -> if (kind != EntityEventType.SHEAR) return@forEach
+                QuestObjectNodeType.PLAYER_ENTITIES_SPAWN -> if (kind != EntityEventType.SPAWN) return@forEach
+                QuestObjectNodeType.PLAYER_ENTITIES_TAME -> if (kind != EntityEventType.TAME) return@forEach
+                QuestObjectNodeType.PLAYER_ENTITIES_BREED -> if (kind != EntityEventType.BREED) return@forEach
+                QuestObjectNodeType.PLAYER_TURTLES_BREED -> if (kind != EntityEventType.TURTLE_BREED) return@forEach
+                QuestObjectNodeType.PLAYER_ENTITIES_DEATH_NEARBY -> if (kind != EntityEventType.DEATH_NEARBY) return@forEach
+                else -> {}
+            }
+            val progMap = session.entityProgress.getOrPut(node.id) { mutableMapOf() }
+            val current = progMap.getOrDefault(goalId, 0.0)
+            val updated = current + 1.0
+            progMap[goalId] = updated
+            questService.saveNodeProgress(player, model.id, session.branchId, node.id, updated, goalId)
+            progressed = true
+        }
+
+        if (progressed && entityId != null) counted.add(entityId)
+
+        val progMap = session.entityProgress[node.id] ?: return
+        val allDone = goals.all { g -> (progMap[g.id.ifBlank { "default" }] ?: 0.0) >= g.goal }
+        if (allDone) {
+            questService.clearNodeProgress(player, model.id, session.branchId, node.id)
+            val gotoRaw = node.goto ?: return
+            val target = normalizeTarget(gotoRaw)
+            runNode(player, model, session.branchId, target, 0)
+        }
+    }
+
+    private fun isPlayerEntityNode(type: QuestObjectNodeType): Boolean =
+        when (type) {
+            QuestObjectNodeType.PLAYER_ENTITIES_BREED,
+            QuestObjectNodeType.PLAYER_ENTITIES_INTERACT,
+            QuestObjectNodeType.PLAYER_ENTITIES_CATCH,
+            QuestObjectNodeType.PLAYER_ENTITIES_DAMAGE,
+            QuestObjectNodeType.PLAYER_ENTITIES_DEATH_NEARBY,
+            QuestObjectNodeType.PLAYER_ENTITIES_DISMOUNT,
+            QuestObjectNodeType.PLAYER_ENTITIES_GET_DAMAGED,
+            QuestObjectNodeType.PLAYER_ENTITIES_KILL,
+            QuestObjectNodeType.PLAYER_ENTITIES_MOUNT,
+            QuestObjectNodeType.PLAYER_ENTITIES_SHEAR,
+            QuestObjectNodeType.PLAYER_ENTITIES_SPAWN,
+            QuestObjectNodeType.PLAYER_ENTITIES_TAME,
+            QuestObjectNodeType.PLAYER_TURTLES_BREED -> true
+            else -> false
+        }
+
+    internal fun handleMovementEvent(
+        player: org.bukkit.entity.Player,
+        kind: MovementEventType,
+        delta: Double = 0.0,
+        vehicleType: String? = null
+    ) {
+        val session = sessions[player.uniqueId] ?: return
+        val model = questService.questInfo(session.questId) ?: return
+        val branch = model.branches[session.branchId] ?: return
+        val node = branch.objects[session.nodeId] ?: return
+        if (!isMovementNode(node.type)) return
+
+        val goal = node.distanceGoal ?: node.count.toDouble().coerceAtLeast(1.0)
+
+        val matches = when (node.type) {
+            QuestObjectNodeType.PLAYER_MOVE -> kind == MovementEventType.MOVE
+            QuestObjectNodeType.PLAYER_MOVE_BY_FOOT_DISTANCE -> kind == MovementEventType.FOOT
+            QuestObjectNodeType.PLAYER_WALK_DISTANCE -> kind == MovementEventType.WALK
+            QuestObjectNodeType.PLAYER_SPRINT_DISTANCE -> kind == MovementEventType.SPRINT
+            QuestObjectNodeType.PLAYER_SWIM_DISTANCE -> kind == MovementEventType.SWIM
+            QuestObjectNodeType.PLAYER_ELYTRA_FLY_DISTANCE -> kind == MovementEventType.GLIDE
+            QuestObjectNodeType.PLAYER_FALL_DISTANCE -> kind == MovementEventType.FALL
+            QuestObjectNodeType.PLAYER_VEHICLE_DISTANCE -> {
+                if (vehicleType != null && node.vehicleType != null && !node.vehicleType.equals(vehicleType, true)) return
+                kind == MovementEventType.VEHICLE
+            }
+            QuestObjectNodeType.PLAYER_HORSE_JUMP -> kind == MovementEventType.HORSE_JUMP
+            QuestObjectNodeType.PLAYER_JUMP -> kind == MovementEventType.JUMP
+            QuestObjectNodeType.PLAYER_ELYTRA_LAND -> kind == MovementEventType.LAND
+            QuestObjectNodeType.PLAYER_POSITION -> true
+            else -> false
+        }
+        if (!matches) return
+
+        if (node.type == QuestObjectNodeType.PLAYER_POSITION) {
+            val target = node.position ?: return
+            val playerLoc = player.location
+            val targetWorld = target.world?.let { plugin.server.getWorld(it) } ?: playerLoc.world
+            if (target.world != null && targetWorld == null) return
+            if (playerLoc.world != targetWorld) return
+            val targetLoc = org.bukkit.Location(targetWorld, target.x ?: playerLoc.x, target.y ?: playerLoc.y, target.z ?: playerLoc.z)
+            val distSq = playerLoc.distanceSquared(targetLoc)
+            val radiusSq = target.radius * target.radius
+            val dist = sqrt(distSq)
+            DebugLog.log(
+                "POS_CHECK player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} " +
+                    "playerLoc=${playerLoc.world?.name}:${"%.2f".format(playerLoc.x)},${"%.2f".format(playerLoc.y)},${"%.2f".format(playerLoc.z)} " +
+                    "targetLoc=${targetLoc.world?.name}:${"%.2f".format(targetLoc.x)},${"%.2f".format(targetLoc.y)},${"%.2f".format(targetLoc.z)} " +
+                    "dist=${"%.2f".format(dist)} radius=${"%.2f".format(target.radius)}"
+            )
+            if (node.positionDisplayDistance) {
+                val now = System.currentTimeMillis()
+                val last = session.positionActionbarHint[node.id] ?: 0L
+                if (now - last >= 1000L) { // co ok. 20 ticków
+                    val remaining = (dist - target.radius).coerceAtLeast(0.0)
+                    player.sendActionBar(Component.text("Odległość: %.1fm".format(remaining)))
+                    session.positionActionbarHint[node.id] = now
+                }
+            }
+            if (distSq <= radiusSq) {
+                questService.clearNodeProgress(player, model.id, session.branchId, node.id)
+                val gotoRaw = node.goto ?: return
+                runNode(player, model, session.branchId, normalizeTarget(gotoRaw), 0)
+            }
+            return
+        }
+
+        val add = if (node.type in listOf(
+                QuestObjectNodeType.PLAYER_HORSE_JUMP,
+                QuestObjectNodeType.PLAYER_JUMP,
+                QuestObjectNodeType.PLAYER_ELYTRA_LAND
+            )
+        ) 1.0 else delta
+
+        val current = session.movementProgress.getOrDefault(node.id, 0.0)
+        session.movementProgress[node.id] = current + add
+        questService.saveNodeProgress(player, model.id, session.branchId, node.id, session.movementProgress[node.id]!!)
+        if (session.movementProgress[node.id]!! >= goal) {
+            val gotoRaw = node.goto ?: return
+            questService.clearNodeProgress(player, model.id, session.branchId, node.id)
+            runNode(player, model, session.branchId, normalizeTarget(gotoRaw), 0)
+        }
+    }
+
+    private fun isMovementNode(type: QuestObjectNodeType): Boolean =
+        when (type) {
+            QuestObjectNodeType.PLAYER_MOVE,
+            QuestObjectNodeType.PLAYER_MOVE_BY_FOOT_DISTANCE,
+            QuestObjectNodeType.PLAYER_POSITION,
+            QuestObjectNodeType.PLAYER_SWIM_DISTANCE,
+            QuestObjectNodeType.PLAYER_ELYTRA_FLY_DISTANCE,
+            QuestObjectNodeType.PLAYER_ELYTRA_LAND,
+            QuestObjectNodeType.PLAYER_FALL_DISTANCE,
+            QuestObjectNodeType.PLAYER_HORSE_JUMP,
+            QuestObjectNodeType.PLAYER_JUMP,
+            QuestObjectNodeType.PLAYER_SPRINT_DISTANCE,
+            QuestObjectNodeType.PLAYER_VEHICLE_DISTANCE,
+            QuestObjectNodeType.PLAYER_WALK_DISTANCE -> true
+            else -> false
+        }
+
+    internal fun handlePhysicalEvent(
+        player: org.bukkit.entity.Player,
+        kind: PhysicalEventType,
+        amount: Double = 1.0,
+        detail: String? = null
+    ) {
+        val session = sessions[player.uniqueId] ?: return
+        val model = questService.questInfo(session.questId) ?: return
+        val branch = model.branches[session.branchId] ?: return
+        val node = branch.objects[session.nodeId] ?: return
+        if (!isPhysicalNode(node.type)) return
+
+        if (node.type == QuestObjectNodeType.PLAYER_BUCKET_FILL && node.bucketType != null) {
+            if (detail == null || !node.bucketType.equals(detail, true)) return
+        }
+        if (node.type == QuestObjectNodeType.PLAYER_SHOOT_PROJECTILE && node.projectileTypes.isNotEmpty()) {
+            if (detail == null || node.projectileTypes.none { it.equals(detail, true) }) return
+        }
+        if ((node.type == QuestObjectNodeType.PLAYER_VEHICLE_ENTER || node.type == QuestObjectNodeType.PLAYER_VEHICLE_LEAVE) &&
+            node.vehicleType != null
+        ) {
+            if (detail == null || !node.vehicleType.equals(detail, true)) return
+        }
+        if (node.type == QuestObjectNodeType.PLAYER_GAIN_HEALTH && node.regainCauses.isNotEmpty()) {
+            if (detail == null || node.regainCauses.none { it.equals(detail, true) }) return
+        }
+        if (node.type == QuestObjectNodeType.PLAYER_TAKE_DAMAGE && node.damageCauses.isNotEmpty()) {
+            if (detail == null || node.damageCauses.none { it.equals(detail, true) }) return
+        }
+
+        val goal = node.distanceGoal ?: node.count.toDouble().coerceAtLeast(1.0)
+        val add = when (node.type) {
+            QuestObjectNodeType.PLAYER_GAIN_HEALTH,
+            QuestObjectNodeType.PLAYER_GAIN_XP,
+            QuestObjectNodeType.PLAYER_TAKE_DAMAGE -> amount
+            QuestObjectNodeType.PLAYER_SNEAK,
+            QuestObjectNodeType.PLAYER_BURN -> amount
+            else -> 1.0
+        }
+        val current = session.physicalProgress.getOrDefault(node.id, 0.0)
+        session.physicalProgress[node.id] = current + add
+        questService.saveNodeProgress(player, model.id, session.branchId, node.id, session.physicalProgress[node.id]!!)
+        val targetReached = session.physicalProgress[node.id]!! >= goal
+        if (targetReached) {
+            val gotoRaw = node.goto ?: return
+            val target = normalizeTarget(gotoRaw)
+            questService.clearNodeProgress(player, model.id, session.branchId, node.id)
+            runNode(player, model, session.branchId, target, 0)
+        }
+    }
+
+    private fun isPhysicalNode(type: QuestObjectNodeType): Boolean =
+        when (type) {
+            QuestObjectNodeType.PLAYER_BED_ENTER,
+            QuestObjectNodeType.PLAYER_BED_LEAVE,
+            QuestObjectNodeType.PLAYER_BUCKET_FILL,
+            QuestObjectNodeType.PLAYER_BURN,
+            QuestObjectNodeType.PLAYER_DIE,
+            QuestObjectNodeType.PLAYER_GAIN_HEALTH,
+            QuestObjectNodeType.PLAYER_GAIN_XP,
+            QuestObjectNodeType.PLAYER_PORTAL_ENTER,
+            QuestObjectNodeType.PLAYER_PORTAL_LEAVE,
+            QuestObjectNodeType.PLAYER_SHOOT_PROJECTILE,
+            QuestObjectNodeType.PLAYER_SNEAK,
+            QuestObjectNodeType.PLAYER_TAKE_DAMAGE,
+            QuestObjectNodeType.PLAYER_TOGGLE_SNEAK,
+            QuestObjectNodeType.PLAYER_VEHICLE_ENTER,
+            QuestObjectNodeType.PLAYER_VEHICLE_LEAVE -> true
+            else -> false
+        }
+
+    internal fun handleMiscEvent(
+        player: org.bukkit.entity.Player,
+        kind: MiscEventType,
+        detail: String? = null
+    ): Boolean {
+        val session = sessions[player.uniqueId] ?: return false
+        val model = questService.questInfo(session.questId) ?: return false
+        val branch = model.branches[session.branchId] ?: return false
+        val node = branch.objects[session.nodeId] ?: return false
+        if (!isMiscNode(node.type)) return false
+
+        when (node.type) {
+            QuestObjectNodeType.PLAYER_CHAT -> {
+                val text = detail ?: return false
+                if (!chatAllowed(node, text)) {
+                    node.chatErrorMessage?.let { MessageFormatter.send(player, it) }
+                    return true // cancel chat
+                }
+                if (!node.chatStoreVariable.isNullOrBlank()) {
+                    questService.updateVariable(player, model.id, node.chatStoreVariable, text)
+                }
+                incrementMisc(node, session, player, model, 1.0)
+                return false
+            }
+            QuestObjectNodeType.PLAYER_ACHIEVEMENT_AWARD -> {
+                if (kind != MiscEventType.ACHIEVEMENT) return false
+                val ach = detail
+                if (node.achievementType != null && ach != null && !node.achievementType.equals(ach, true)) return false
+                incrementMisc(node, session, player, model, 1.0)
+                return false
+            }
+            QuestObjectNodeType.PLAYER_CONNECT,
+            QuestObjectNodeType.PLAYER_DISCONNECT,
+            QuestObjectNodeType.PLAYER_RESPAWN -> {
+                val expected = when (node.type) {
+                    QuestObjectNodeType.PLAYER_CONNECT -> MiscEventType.CONNECT
+                    QuestObjectNodeType.PLAYER_DISCONNECT -> MiscEventType.DISCONNECT
+                    QuestObjectNodeType.PLAYER_RESPAWN -> MiscEventType.RESPAWN
+                    else -> kind
+                }
+                if (kind != expected) return false
+                incrementMisc(node, session, player, model, 1.0)
+                return false
+            }
+            else -> return false
+        }
+    }
+
+    private fun incrementMisc(node: QuestObjectNode, session: BranchSession, player: org.bukkit.entity.Player, model: QuestModel, delta: Double) {
+        val goal = node.distanceGoal ?: node.count.toDouble().coerceAtLeast(1.0)
+        val current = session.miscProgress.getOrDefault(node.id, 0.0)
+        session.miscProgress[node.id] = current + delta
+        questService.saveNodeProgress(player, model.id, session.branchId, node.id, session.miscProgress[node.id]!!)
+        if (session.miscProgress[node.id]!! >= goal) {
+            val gotoRaw = node.goto ?: return
+            val target = normalizeTarget(gotoRaw)
+            // Ustaw stan następnego węzła nawet jeśli gracz właśnie się rozłącza (np. DISCONNECT)
+            session.nodeId = target
+            questService.updateBranchState(player, model.id, session.branchId, target)
+            questService.clearNodeProgress(player, model.id, session.branchId, node.id)
+            if (player.isOnline) {
+                runNode(player, model, session.branchId, target, 0)
+            } else {
+                // gracz offline: uruchom kolejny węzeł po powrocie na serwer
+                val offline = plugin.server.getOfflinePlayer(player.uniqueId)
+                val task = object : BukkitRunnable() {
+                    override fun run() {
+                        val online = offline.player
+                        if (online != null && online.isOnline) {
+                            runNode(offline, model, session.branchId, target, 0)
+                            this.cancel()
+                        }
+                    }
+                }.runTaskTimer(plugin, 20L, 20L)
+                session.waitTasks[target] = task
+            }
+        }
+    }
+
+    private fun chatAllowed(node: QuestObjectNode, text: String): Boolean {
+        if (node.chatMinLength != null && text.length < node.chatMinLength) return false
+        if (node.chatMaxLength != null && text.length > node.chatMaxLength) return false
+        if (node.chatWhitelist.isNotEmpty() && node.chatWhitelist.none { it.equals(text, true) }) return false
+        if (node.chatBlacklist.isNotEmpty() && node.chatBlacklist.any { it.equals(text, true) }) return false
+        if (!node.chatRegex.isNullOrBlank() && !text.matches(node.chatRegex.toRegex())) return false
+        return true
+    }
+
+    private fun isMiscNode(type: QuestObjectNodeType): Boolean =
+        when (type) {
+            QuestObjectNodeType.PLAYER_ACHIEVEMENT_AWARD,
+            QuestObjectNodeType.PLAYER_CHAT,
+            QuestObjectNodeType.PLAYER_CONNECT,
+            QuestObjectNodeType.PLAYER_DISCONNECT,
+            QuestObjectNodeType.PLAYER_RESPAWN -> true
+            else -> false
+        }
+
+    internal fun handlePlayerItemEvent(
+        player: org.bukkit.entity.Player,
+        kind: ItemEventType,
+        item: ItemStack?,
+        inventoryType: String? = null,
+        slot: Int? = null,
+        villagerId: UUID? = null
+    ) {
+        val session = sessions[player.uniqueId] ?: return
+        val model = questService.questInfo(session.questId) ?: return
+        val branch = model.branches[session.branchId] ?: return
+        val node = branch.objects[session.nodeId] ?: return
+        if (!isPlayerItemNode(node.type)) return
+
+        if (!node.tradeAllowSameVillagers && villagerId != null) {
+            val seen = session.villagerCounted.getOrPut(node.id) { mutableSetOf() }
+            if (seen.contains(villagerId)) {
+                node.tradeAllowSameVillagersMessage?.let { MessageFormatter.send(player, it) }
+                return
+            }
+            seen.add(villagerId)
+        }
+
+        if (node.itemInventoryTypes.isNotEmpty() && inventoryType != null && node.itemInventoryTypes.none { it.equals(inventoryType, true) }) {
+            return
+        }
+        if (node.itemInventorySlots.isNotEmpty() && slot != null && !node.itemInventorySlots.contains(slot)) {
+            return
+        }
+        if (node.type == QuestObjectNodeType.PLAYER_ITEMS_INTERACT && node.itemClickType != null) {
+            val click = inventoryType ?: ""
+            if (!node.itemClickType.equals(click, true)) return
+        }
+
+        val goals = node.itemGoals.ifEmpty {
+            listOf(ItemGoal(id = "default", items = emptyList(), goal = node.count.toDouble().coerceAtLeast(1.0)))
+        }
+
+        val matchedItem = item
+        var progressed = false
+        goals.forEach { goal ->
+            val matchOk = when {
+                goal.items.isEmpty() -> matchedItem != null
+                matchedItem != null -> goal.items.any { matchesItem(it, matchedItem) }
+                else -> false
+            }
+            if (!matchOk) return@forEach
+
+            when (node.type) {
+                QuestObjectNodeType.PLAYER_ITEMS_REQUIRE -> {
+                    // handled below by inventory check
+                }
+                else -> {
+                    val progMap = session.itemProgress.getOrPut(node.id) { mutableMapOf() }
+                    val cur = progMap.getOrDefault(goal.id, 0.0)
+                    progMap[goal.id] = cur + 1.0
+                    progressed = true
+                    if (goal.take && matchedItem != null) {
+                        removeOne(player, matchedItem)
+                    }
+                }
+            }
+        }
+
+        if (node.type == QuestObjectNodeType.PLAYER_ITEMS_REQUIRE) {
+            if (checkRequireSatisfied(player, goals, node.itemsRequired)) {
+                node.goto?.let { handleGoto(player, model, session.branchId, it, 0) }
+            }
+            return
+        }
+
+        if (!progressed) return
+        val progMap = session.itemProgress[node.id] ?: return
+        val allDone = goals.all { g -> (progMap[g.id] ?: 0.0) >= g.goal }
+        if (allDone) {
+            val gotoRaw = node.goto ?: return
+            val target = normalizeTarget(gotoRaw)
+            runNode(player, model, session.branchId, target, 0)
+        }
+    }
+
+    private fun isPlayerItemNode(type: QuestObjectNodeType): Boolean =
+        when (type) {
+            QuestObjectNodeType.PLAYER_ITEMS_ACQUIRE,
+            QuestObjectNodeType.PLAYER_ITEMS_BREW,
+            QuestObjectNodeType.PLAYER_ITEMS_CONSUME,
+            QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_PUT,
+            QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_TAKE,
+            QuestObjectNodeType.PLAYER_ITEMS_CRAFT,
+            QuestObjectNodeType.PLAYER_ITEMS_DROP,
+            QuestObjectNodeType.PLAYER_ITEMS_ENCHANT,
+            QuestObjectNodeType.PLAYER_ITEMS_FISH,
+            QuestObjectNodeType.PLAYER_ITEMS_INTERACT,
+            QuestObjectNodeType.PLAYER_ITEMS_MELT,
+            QuestObjectNodeType.PLAYER_ITEMS_PICKUP,
+            QuestObjectNodeType.PLAYER_ITEMS_REPAIR,
+            QuestObjectNodeType.PLAYER_ITEMS_REQUIRE,
+            QuestObjectNodeType.PLAYER_ITEMS_THROW,
+            QuestObjectNodeType.PLAYER_ITEMS_TRADE -> true
+            else -> false
+        }
+
+    private fun matchesItem(goal: ItemStackConfig, stack: ItemStack): Boolean {
+        if (!goal.type.equals(stack.type.name, true)) return false
+        // shallow checks only; ignore name/lore/customModelData for now
+        return true
+    }
+
+    private fun removeOne(player: org.bukkit.entity.Player, sample: ItemStack) {
+        val inv = player.inventory
+        for (i in 0 until inv.size) {
+            val it = inv.getItem(i) ?: continue
+            if (it.type == sample.type) {
+                if (it.amount > 1) {
+                    it.amount = it.amount - 1
+                } else {
+                    inv.clear(i)
+                }
+                return
+            }
+        }
+    }
+
+    private fun checkRequireSatisfied(player: org.bukkit.entity.Player, goals: List<ItemGoal>, itemsReq: List<ItemStackConfig>): Boolean {
+        val inv = player.inventory
+        val stacks = inv.contents.filterNotNull()
+        if (itemsReq.isNotEmpty()) {
+            return itemsReq.all { cfg ->
+                stacks.any { it.type.name.equals(cfg.type, true) && it.amount >= 1 }
+            }
+        }
+        return goals.all { g ->
+            val needed = g.goal.toInt()
+            val matchedCount = if (g.items.isEmpty()) stacks.sumOf { it.amount } else {
+                stacks.filter { st -> g.items.any { it.type.equals(st.type.name, true) } }.sumOf { it.amount }
+            }
+            matchedCount >= needed
+        }
+    }
+
+    private fun sendSyntheticMessage(player: org.bukkit.entity.Player, component: Component, trackSynthetic: Boolean = false) {
         ChatHideService.allowNext(player.uniqueId)
         ChatHistoryManager.skipNextMessages(player.uniqueId)
+        if (trackSynthetic) {
+            divergeSessions[player.uniqueId]?.syntheticMessages?.add(gson.serialize(component))
+        }
         player.sendMessage(component)
+    }
+
+    private fun replayHistory(
+        player: org.bukkit.entity.Player,
+        history: List<Component>,
+        trackSynthetic: Boolean = false
+    ) {
+        history.forEach { comp -> sendSyntheticMessage(player, comp, trackSynthetic) }
     }
 
     private fun pickEntries(entries: List<QuestItemEntry>, count: Int): List<QuestItemEntry> {
@@ -1199,6 +2090,23 @@ class BranchRuntimeManager(
         return org.bukkit.Location(world, x, y, z)
     }
 
+    private fun normalizeTreeType(raw: String?): String? {
+        val up = raw?.uppercase() ?: return null
+        return when (up) {
+            "TREE", "BIG_TREE", "SWAMP" -> "OAK"
+            "BIRCH", "TALL_BIRCH" -> "BIRCH"
+            "REDWOOD", "PINE" -> "SPRUCE"
+            "TALL_REDWOOD", "MEGA_REDWOOD" -> "MEGA_SPRUCE"
+            "ACACIA" -> "ACACIA"
+            "DARK_OAK" -> "DARK_OAK"
+            "JUNGLE", "SMALL_JUNGLE", "COCOA_TREE", "JUNGLE_BUSH" -> "JUNGLE"
+            "MANGROVE" -> "MANGROVE"
+            "CRIMSON_FUNGUS", "CRIMSON_FUNGI" -> "CRIMSON"
+            "WARPED_FUNGUS", "WARPED_FUNGI" -> "WARPED"
+            else -> up
+        }
+    }
+
     private fun matchEntity(entity: org.bukkit.entity.Entity, goal: EntityGoal): Boolean {
         if (goal.types.isNotEmpty() && goal.types.none { t -> entity.type.name.equals(t, true) }) return false
         if (goal.names.isNotEmpty()) {
@@ -1356,6 +2264,37 @@ class BranchRuntimeManager(
         }
     }
 
+    private fun preloadNodeProgress(player: OfflinePlayer, model: QuestModel, branchId: String, node: QuestObjectNode) {
+        val session = sessions[player.uniqueId] ?: return
+        val saved = questService.loadNodeProgress(player, model.id, branchId, node.id)
+        when {
+            isMovementNode(node.type) -> session.movementProgress.putIfAbsent(node.id, saved)
+            isPhysicalNode(node.type) -> session.physicalProgress.putIfAbsent(node.id, saved)
+            isMiscNode(node.type) -> session.miscProgress.putIfAbsent(node.id, saved)
+            isPlayerBlockNode(node.type) -> {
+                val goals = questService.loadNodeGoalProgress(player, model.id, branchId, node.id)
+                if (goals.isNotEmpty()) {
+                    val map = session.blockProgress.getOrPut(node.id) { mutableMapOf() }
+                    goals.forEach { (g, v) -> map[g] = v }
+                }
+            }
+            isPlayerItemNode(node.type) -> {
+                val goals = questService.loadNodeGoalProgress(player, model.id, branchId, node.id)
+                if (goals.isNotEmpty()) {
+                    val map = session.itemProgress.getOrPut(node.id) { mutableMapOf() }
+                    goals.forEach { (g, v) -> map[g] = v }
+                }
+            }
+            isPlayerEntityNode(node.type) -> {
+                val goals = questService.loadNodeGoalProgress(player, model.id, branchId, node.id)
+                if (goals.isNotEmpty()) {
+                    val map = session.entityProgress.getOrPut(node.id) { mutableMapOf() }
+                    goals.forEach { (g, v) -> map[g] = v }
+                }
+            }
+        }
+    }
+
     private fun giveEffect(player: org.bukkit.entity.Player, payload: String) {
         val parts = payload.split("\\s+".toRegex())
         val type = runCatching { PotionEffectType.getByName(parts.getOrNull(0)?.uppercase() ?: "") }.getOrNull() ?: return
@@ -1379,7 +2318,18 @@ class BranchRuntimeManager(
         var timeLimitTask: org.bukkit.scheduler.BukkitTask? = null,
         val groups: MutableList<GroupState> = mutableListOf(),
         val groupChildMap: MutableMap<String, GroupState> = mutableMapOf(),
-        val divergeObjectMap: MutableMap<String, DivergeChoiceGui> = mutableMapOf()
+        val divergeObjectMap: MutableMap<String, DivergeChoiceGui> = mutableMapOf(),
+        val blockProgress: MutableMap<String, MutableMap<String, Double>> = mutableMapOf(),
+        val blockCounted: MutableMap<String, MutableSet<String>> = mutableMapOf(),
+        val entityProgress: MutableMap<String, MutableMap<String, Double>> = mutableMapOf(),
+        val entityCounted: MutableMap<String, MutableSet<UUID>> = mutableMapOf(),
+        val itemProgress: MutableMap<String, MutableMap<String, Double>> = mutableMapOf(),
+        val villagerCounted: MutableMap<String, MutableSet<UUID>> = mutableMapOf(),
+        val movementProgress: MutableMap<String, Double> = mutableMapOf(),
+        val physicalProgress: MutableMap<String, Double> = mutableMapOf(),
+        val miscProgress: MutableMap<String, Double> = mutableMapOf(),
+        val waitTasks: MutableMap<String, org.bukkit.scheduler.BukkitTask> = mutableMapOf(),
+        val positionActionbarHint: MutableMap<String, Long> = mutableMapOf()
     )
 
     private data class ActionContinuation(

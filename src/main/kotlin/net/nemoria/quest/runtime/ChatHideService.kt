@@ -1,7 +1,6 @@
 package net.nemoria.quest.runtime
 
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer
-import org.bukkit.entity.Player
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -11,6 +10,7 @@ object ChatHideService {
     private val allowExact: MutableMap<UUID, Int> = ConcurrentHashMap()
     private val allowJson: MutableMap<UUID, MutableList<String>> = ConcurrentHashMap()
     private val buffered: MutableMap<UUID, MutableList<String>> = ConcurrentHashMap()
+    private val dialogPlayers = ConcurrentHashMap.newKeySet<UUID>()
     private val gson = GsonComponentSerializer.gson()
 
     fun hide(playerId: UUID) {
@@ -22,6 +22,8 @@ object ChatHideService {
         allowOnce.remove(playerId)
         allowExact.remove(playerId)
         allowJson.remove(playerId)
+        dialogPlayers.remove(playerId)
+        ChatMessageDeduplicator.clear(playerId)
     }
 
     fun isHidden(playerId: UUID): Boolean = hidden.contains(playerId)
@@ -77,24 +79,17 @@ object ChatHideService {
         buffered.computeIfAbsent(playerId) { mutableListOf() }.add(jsonMessage)
     }
 
-    fun flushBuffered(player: Player) {
-        val messages = buffered.remove(player.uniqueId) ?: return
+    fun flushBufferedToHistory(playerId: UUID) {
+        val messages = buffered.remove(playerId) ?: return
         messages.forEach { json ->
-            runCatching { gson.deserialize(json) }.onSuccess { comp ->
-                ChatHistoryManager.skipNextMessages(player.uniqueId)
-                allowNext(player.uniqueId)
-                player.sendMessage(comp)
+            runCatching { gson.deserialize(json) }.getOrNull()?.let { component ->
+                ChatHistoryManager.append(playerId, component)
             }
         }
     }
 
-    fun flushBufferedToHistory(playerId: UUID) {
-        val messages = buffered.remove(playerId) ?: return
-        messages.forEach { json ->
-            runCatching { gson.deserialize(json) }.onSuccess { comp ->
-                ChatHistoryManager.append(playerId, comp)
-            }
-        }
+    fun clearDedup(playerId: UUID) {
+        ChatMessageDeduplicator.clear(playerId)
     }
 
     fun clear() {
@@ -102,6 +97,21 @@ object ChatHideService {
         allowOnce.clear()
         allowExact.clear()
         allowJson.clear()
+        dialogPlayers.clear()
         buffered.clear()
+        hidden.forEach { ChatMessageDeduplicator.clear(it) }
     }
+
+    fun beginDialog(playerId: UUID) {
+        hidden.add(playerId)
+        dialogPlayers.add(playerId)
+        clearDedup(playerId)
+    }
+
+    fun endDialog(playerId: UUID) {
+        dialogPlayers.remove(playerId)
+        show(playerId)
+    }
+
+    fun isDialogActive(playerId: UUID): Boolean = dialogPlayers.contains(playerId)
 }

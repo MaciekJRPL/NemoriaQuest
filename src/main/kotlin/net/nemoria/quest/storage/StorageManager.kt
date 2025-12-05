@@ -4,21 +4,25 @@ import com.zaxxer.hikari.HikariDataSource
 import net.nemoria.quest.data.repo.QuestModelRepository
 import net.nemoria.quest.data.repo.UserDataRepository
 import net.nemoria.quest.data.repo.ServerVariableRepository
+import net.nemoria.quest.data.repo.PlayerBlockRepository
 import net.nemoria.quest.storage.repo.SqliteQuestModelRepository
 import net.nemoria.quest.storage.repo.SqliteUserDataRepository
 import net.nemoria.quest.storage.repo.SqliteServerVariableRepository
+import net.nemoria.quest.storage.repo.SqlitePlayerBlockRepository
 import java.sql.Connection
 
 class StorageManager(private val dataSource: HikariDataSource) {
     val userRepo: UserDataRepository
     val questModelRepo: QuestModelRepository
     val serverVarRepo: ServerVariableRepository
+    val playerBlockRepo: PlayerBlockRepository
 
     init {
         migrate()
         userRepo = SqliteUserDataRepository(dataSource)
         questModelRepo = SqliteQuestModelRepository(dataSource)
         serverVarRepo = SqliteServerVariableRepository(dataSource)
+        playerBlockRepo = SqlitePlayerBlockRepository(dataSource)
     }
 
     fun close() {
@@ -30,6 +34,7 @@ class StorageManager(private val dataSource: HikariDataSource) {
             conn.autoCommit = false
             createUserTable(conn)
             createQuestModelTable(conn)
+            createPlayerBlockTable(conn)
             conn.commit()
         }
     }
@@ -112,6 +117,27 @@ class StorageManager(private val dataSource: HikariDataSource) {
                 )
                 """.trimIndent()
             )
+        }
+    }
+
+    private fun createPlayerBlockTable(conn: Connection) {
+        conn.createStatement().use { st ->
+            st.executeUpdate(
+                """
+                CREATE TABLE IF NOT EXISTS player_blocks (
+                    world TEXT NOT NULL,
+                    x INTEGER NOT NULL,
+                    y INTEGER NOT NULL,
+                    z INTEGER NOT NULL,
+                    owner TEXT,
+                    ts INTEGER NOT NULL,
+                    PRIMARY KEY (world, x, y, z)
+                )
+                """.trimIndent()
+            )
+        }
+        conn.createStatement().use { st ->
+            st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_player_blocks_ts ON player_blocks(ts)")
         }
     }
 

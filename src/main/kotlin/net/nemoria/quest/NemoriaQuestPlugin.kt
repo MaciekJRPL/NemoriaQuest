@@ -20,8 +20,15 @@ import net.nemoria.quest.util.ResourceExporter
 import net.nemoria.quest.hook.ChatHideBukkitListener
 import net.nemoria.quest.listener.QuestListeners
 import net.nemoria.quest.listener.BranchInteractListener
+import net.nemoria.quest.listener.PlayerBlockListener
+import net.nemoria.quest.listener.PlayerEntityListener
+import net.nemoria.quest.listener.PlayerItemListener
+import net.nemoria.quest.listener.PlayerMoveListener
+import net.nemoria.quest.listener.PlayerPhysicalListener
+import net.nemoria.quest.listener.PlayerMiscListener
 import net.nemoria.quest.config.GuiConfigLoader
 import net.nemoria.quest.hook.ChatHistoryPacketListener
+import net.nemoria.quest.runtime.PlayerBlockTracker
 
 class NemoriaQuestPlugin : JavaPlugin() {
     lateinit var coreConfig: CoreConfig
@@ -71,6 +78,15 @@ class NemoriaQuestPlugin : JavaPlugin() {
         server.pluginManager.registerEvents(net.nemoria.quest.gui.GuiListener(), this)
         server.pluginManager.registerEvents(net.nemoria.quest.listener.DivergeGuiListener(), this)
         server.pluginManager.registerEvents(ChatHideBukkitListener(), this)
+        server.pluginManager.registerEvents(PlayerBlockListener(), this)
+        server.pluginManager.registerEvents(PlayerEntityListener(), this)
+        server.pluginManager.registerEvents(PlayerItemListener(), this)
+        server.pluginManager.registerEvents(PlayerMoveListener(), this)
+        server.pluginManager.registerEvents(PlayerPhysicalListener(), this)
+        server.pluginManager.registerEvents(PlayerMiscListener(), this)
+
+        PlayerBlockTracker.init(Services.storage.playerBlockRepo)
+        PlayerBlockTracker.importLegacy(java.io.File(dataFolder, "player_blocks.yml"))
 
         getCommand("nemoriaquest")?.setExecutor(MainCommand(this))
         server.pluginManager.registerEvents(QuestListeners(), this)
@@ -96,6 +112,8 @@ class NemoriaQuestPlugin : JavaPlugin() {
         val storageConfig = StorageConfigLoader(this).load()
         runCatching { Services.storage.close() }
         initStorage(storageConfig)
+        PlayerBlockTracker.init(Services.storage.playerBlockRepo)
+        PlayerBlockTracker.importLegacy(java.io.File(dataFolder, "player_blocks.yml"))
         exportTexts()
         Services.variables = net.nemoria.quest.core.VariableService(this, Services.storage.serverVarRepo)
         Services.variables.load()
@@ -110,6 +128,12 @@ class NemoriaQuestPlugin : JavaPlugin() {
         server.pluginManager.registerEvents(net.nemoria.quest.gui.GuiListener(), this)
         server.pluginManager.registerEvents(net.nemoria.quest.listener.DivergeGuiListener(), this)
         server.pluginManager.registerEvents(ChatHideBukkitListener(), this)
+        server.pluginManager.registerEvents(PlayerBlockListener(), this)
+        server.pluginManager.registerEvents(PlayerEntityListener(), this)
+        server.pluginManager.registerEvents(PlayerItemListener(), this)
+        server.pluginManager.registerEvents(PlayerMoveListener(), this)
+        server.pluginManager.registerEvents(PlayerPhysicalListener(), this)
+        server.pluginManager.registerEvents(PlayerMiscListener(), this)
         net.nemoria.quest.runtime.ChatHideService.clear()
         return true
     }

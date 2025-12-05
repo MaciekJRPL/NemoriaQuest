@@ -160,6 +160,19 @@ object QuestContentLoader {
     private fun parseObjectNode(id: String, sec: org.bukkit.configuration.ConfigurationSection?): QuestObjectNode? {
         if (sec == null) return null
         val type = runCatching { QuestObjectNodeType.valueOf(sec.getString("type", "SERVER_ACTIONS")!!.uppercase()) }.getOrDefault(QuestObjectNodeType.SERVER_ACTIONS)
+        val isPlayerBlockType = when (type) {
+            QuestObjectNodeType.PLAYER_BLOCKS_BREAK,
+            QuestObjectNodeType.PLAYER_BLOCKS_PLACE,
+            QuestObjectNodeType.PLAYER_BLOCKS_INTERACT,
+            QuestObjectNodeType.PLAYER_BLOCKS_IGNITE,
+            QuestObjectNodeType.PLAYER_BLOCKS_STRIP,
+            QuestObjectNodeType.PLAYER_BLOCK_FARM,
+            QuestObjectNodeType.PLAYER_BLOCK_FROST_WALK,
+            QuestObjectNodeType.PLAYER_MAKE_PATHS,
+            QuestObjectNodeType.PLAYER_SPAWNER_PLACE,
+            QuestObjectNodeType.PLAYER_TREE_GROW -> true
+            else -> false
+        }
         val desc = sec.getString("objective_detail") ?: sec.getString("description")
         val actions = sec.getStringList("actions")
         val goto = sec.getString("goto")
@@ -228,7 +241,74 @@ object QuestContentLoader {
             val gotoCase = caseSec.getString("goto")
             SwitchCase(matchAmount = matchAmt, noMatchAmount = noMatchAmt, conditions = conds, goto = gotoCase)
         } ?: emptyList()
-        val goals = sec.getConfigurationSection("goals")?.getKeys(false)?.mapNotNull { key ->
+        val isPlayerEntityType = when (type) {
+            QuestObjectNodeType.PLAYER_ENTITIES_BREED,
+            QuestObjectNodeType.PLAYER_ENTITIES_INTERACT,
+            QuestObjectNodeType.PLAYER_ENTITIES_CATCH,
+            QuestObjectNodeType.PLAYER_ENTITIES_DAMAGE,
+            QuestObjectNodeType.PLAYER_ENTITIES_DEATH_NEARBY,
+            QuestObjectNodeType.PLAYER_ENTITIES_DISMOUNT,
+            QuestObjectNodeType.PLAYER_ENTITIES_GET_DAMAGED,
+            QuestObjectNodeType.PLAYER_ENTITIES_KILL,
+            QuestObjectNodeType.PLAYER_ENTITIES_MOUNT,
+            QuestObjectNodeType.PLAYER_ENTITIES_SHEAR,
+            QuestObjectNodeType.PLAYER_ENTITIES_SPAWN,
+            QuestObjectNodeType.PLAYER_ENTITIES_TAME -> true
+            else -> false
+        }
+        val isPlayerItemType = when (type) {
+            QuestObjectNodeType.PLAYER_ITEMS_ACQUIRE,
+            QuestObjectNodeType.PLAYER_ITEMS_BREW,
+            QuestObjectNodeType.PLAYER_ITEMS_CONSUME,
+            QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_PUT,
+            QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_TAKE,
+            QuestObjectNodeType.PLAYER_ITEMS_CRAFT,
+            QuestObjectNodeType.PLAYER_ITEMS_DROP,
+            QuestObjectNodeType.PLAYER_ITEMS_ENCHANT,
+            QuestObjectNodeType.PLAYER_ITEMS_FISH,
+            QuestObjectNodeType.PLAYER_ITEMS_INTERACT,
+            QuestObjectNodeType.PLAYER_ITEMS_MELT,
+            QuestObjectNodeType.PLAYER_ITEMS_PICKUP,
+            QuestObjectNodeType.PLAYER_ITEMS_REPAIR,
+            QuestObjectNodeType.PLAYER_ITEMS_REQUIRE,
+            QuestObjectNodeType.PLAYER_ITEMS_THROW,
+            QuestObjectNodeType.PLAYER_ITEMS_TRADE -> true
+            else -> false
+        }
+
+        val blockGoals = if (isPlayerBlockType) {
+            sec.getConfigurationSection("goals")?.getKeys(false)?.mapNotNull { key ->
+                val g = sec.getConfigurationSection("goals.$key") ?: return@mapNotNull null
+                BlockGoal(
+                    id = key,
+                    types = g.getStringList("types"),
+                    states = g.getStringList("states"),
+                    statesRequiredCount = g.getInt("states_required_count", Int.MAX_VALUE),
+                    goal = g.getDouble("goal", 1.0)
+                )
+            } ?: emptyList()
+        } else emptyList()
+        val itemGoals = if (isPlayerItemType) {
+            sec.getConfigurationSection("goals")?.getKeys(false)?.mapNotNull { key ->
+                val g = sec.getConfigurationSection("goals.$key") ?: return@mapNotNull null
+                val singleItem = g.getConfigurationSection("item")?.let { parseItemStackConfig(it) }
+                val itemsList = parseItemsList(g.get("items"))
+                val combined = when {
+                    singleItem != null -> listOf(singleItem)
+                    itemsList.isNotEmpty() -> itemsList
+                    else -> emptyList()
+                }
+                ItemGoal(
+                    id = key,
+                    items = combined,
+                    check = g.getString("check"),
+                    goal = g.getDouble("goal", 1.0),
+                    take = g.getBoolean("take", false)
+                )
+            } ?: emptyList()
+        } else emptyList()
+
+        val goals = if (!isPlayerEntityType) emptyList() else sec.getConfigurationSection("goals")?.getKeys(false)?.mapNotNull { key ->
             val g = sec.getConfigurationSection("goals.$key") ?: return@mapNotNull null
             EntityGoal(
                 types = g.getStringList("types"),
@@ -236,7 +316,8 @@ object QuestContentLoader {
                 colors = g.getStringList("colors"),
                 horseColors = g.getStringList("horse_colors"),
                 horseStyles = g.getStringList("horse_styles"),
-                goal = g.getDouble("goal", 1.0)
+                goal = g.getDouble("goal", 1.0),
+                id = key
             )
         } ?: emptyList()
         val position = parsePosition(sec.getConfigurationSection("position"))
@@ -279,6 +360,37 @@ object QuestContentLoader {
         } ?: emptyList()
         val divergeDelay = parseDurationSeconds(sec.getString("reopen_delay"))?.let { it * 20 }
         val avoidRepeat = sec.getStringList("avoid_repeat_end_types")
+        val blockAllowPlayerBlocks = sec.getBoolean("allow_player_blocks", true)
+        val blockAllowSameBlocks = sec.getBoolean("allow_same_blocks", true)
+        val blockAllowPlayerBlocksMsg = sec.getString("allow_player_blocks_error_message")
+        val blockAllowSameBlocksMsg = sec.getString("allow_same_blocks_error_message")
+        val blockClickType = sec.getString("block_click_type") ?: sec.getString("click_type")
+        val blockSpawnTypes = sec.getStringList("spawn_types")
+        val blockTreeType = sec.getString("tree_type")
+        val itemInventoryTypes = sec.getStringList("inventory_types")
+        val itemInventorySlots = sec.getIntegerList("inventory_slots")
+        val itemClickType = sec.getString("item_click_type") ?: sec.getString("click_type")
+        val tradeAllowSameVillagers = sec.getBoolean("allow_same_villagers", true)
+        val tradeAllowSameVillagersMsg = sec.getString("allow_same_villagers_error_message")
+        val itemsRequired = parseItemsList(sec.get("items"))
+        val entityAllowSame = sec.getBoolean("allow_same_entities", true)
+        val entityAllowSameMsg = sec.getString("allow_same_entities_error_message")
+        val entityMaxDistance = sec.getDouble("max_distance", Double.NaN).let { if (it.isNaN()) null else it }
+        val distanceGoal = sec.getDouble("goal", Double.NaN).let { if (it.isNaN()) null else it }
+        val positionDisplayDistance = sec.getBoolean("display_distance", false)
+        val vehicleType = sec.getString("vehicle_type")
+        val bucketType = sec.getString("bucket_type")
+        val regainCauses = sec.getStringList("regain_causes").ifEmpty { sec.getStringList("causes") }
+        val damageCauses = sec.getStringList("damage_causes").ifEmpty { sec.getStringList("causes") }
+        val projectileTypes = sec.getStringList("projectile_types")
+        val chatWhitelist = sec.getStringList("whitelist")
+        val chatBlacklist = sec.getStringList("blacklist")
+        val chatRegex = sec.getString("regex")
+        val chatMinLength = sec.getInt("min_length", Int.MIN_VALUE).let { if (sec.isInt("min_length")) it else null }
+        val chatMaxLength = sec.getInt("max_length", Int.MIN_VALUE).let { if (sec.isInt("max_length")) it else null }
+        val chatErrorMessage = sec.getString("error_message")
+        val chatStoreVariable = sec.getString("store_in_variable")
+        val waitGoalSeconds = parseDurationSeconds(sec.getString("goal"))?.let { it }
         return QuestObjectNode(
             id = id,
             type = type,
@@ -302,6 +414,39 @@ object QuestContentLoader {
             choices = choices,
             cases = cases,
             goals = goals,
+            entityAllowSame = entityAllowSame,
+            entityAllowSameMessage = entityAllowSameMsg,
+            entityMaxDistance = entityMaxDistance,
+            blockGoals = blockGoals,
+            blockAllowPlayerBlocks = blockAllowPlayerBlocks,
+            blockAllowSameBlocks = blockAllowSameBlocks,
+            blockAllowPlayerBlocksMessage = blockAllowPlayerBlocksMsg,
+            blockAllowSameBlocksMessage = blockAllowSameBlocksMsg,
+            blockClickType = blockClickType,
+            blockSpawnTypes = blockSpawnTypes,
+            blockTreeType = blockTreeType,
+            itemGoals = itemGoals,
+            tradeAllowSameVillagers = tradeAllowSameVillagers,
+            tradeAllowSameVillagersMessage = tradeAllowSameVillagersMsg,
+            itemInventoryTypes = itemInventoryTypes,
+            itemInventorySlots = itemInventorySlots,
+            itemClickType = itemClickType,
+            itemsRequired = itemsRequired,
+            distanceGoal = distanceGoal,
+            positionDisplayDistance = positionDisplayDistance,
+            vehicleType = vehicleType,
+            bucketType = bucketType,
+            regainCauses = regainCauses,
+            damageCauses = damageCauses,
+            projectileTypes = projectileTypes,
+            chatWhitelist = chatWhitelist,
+            chatBlacklist = chatBlacklist,
+            chatRegex = chatRegex,
+            chatMinLength = chatMinLength,
+            chatMaxLength = chatMaxLength,
+            chatErrorMessage = chatErrorMessage,
+            chatStoreVariable = chatStoreVariable,
+            waitGoalSeconds = waitGoalSeconds,
             damage = damage,
             linkToQuest = linkToQuest,
             position = position,
@@ -351,12 +496,20 @@ object QuestContentLoader {
 
     private fun parsePosition(sec: org.bukkit.configuration.ConfigurationSection?): PositionTarget? {
         if (sec == null) return null
+        fun readDouble(key: String): Double? {
+            val raw = sec.get(key) ?: return null
+            return when (raw) {
+                is Number -> raw.toDouble()
+                is String -> raw.toDoubleOrNull()
+                else -> null
+            }
+        }
         return PositionTarget(
             world = sec.getString("world"),
-            x = sec.getDouble("x").takeIf { sec.isDouble("x") },
-            y = sec.getDouble("y").takeIf { sec.isDouble("y") },
-            z = sec.getDouble("z").takeIf { sec.isDouble("z") },
-            radius = sec.getDouble("radius", 8.0)
+            x = readDouble("x"),
+            y = readDouble("y"),
+            z = readDouble("z"),
+            radius = readDouble("radius") ?: 8.0
         )
     }
 
@@ -446,6 +599,29 @@ object QuestContentLoader {
             lore = sec.getStringList("lore"),
             customModelData = if (sec.isInt("custom_model_data")) sec.getInt("custom_model_data") else null
         )
+    }
+
+    private fun parseItemsList(raw: Any?): List<ItemStackConfig> {
+        return when (raw) {
+            null -> emptyList()
+            is org.bukkit.configuration.ConfigurationSection -> raw.getKeys(false).mapNotNull { key ->
+                parseItemStackConfig(raw.getConfigurationSection(key))
+            }
+            is List<*> -> raw.mapNotNull { elem ->
+                when (elem) {
+                    is String -> ItemStackConfig(type = elem)
+                    is Map<*, *> -> {
+                        val type = elem["type"]?.toString() ?: return@mapNotNull null
+                        val name = elem["name"]?.toString()
+                        val lore = (elem["lore"] as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList()
+                        val cmd = elem["custom_model_data"]?.toString()?.toIntOrNull()
+                        ItemStackConfig(type = type, name = name, lore = lore, customModelData = cmd)
+                    }
+                    else -> null
+                }
+            }
+            else -> emptyList()
+        }
     }
 
     private inline fun <K, V> Iterable<K>.associateNotNull(transform: (K) -> Pair<K, V>?): Map<K, V> {

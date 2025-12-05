@@ -26,6 +26,7 @@ class MainCommand(private val plugin: NemoriaQuestPlugin) : CommandExecutor, Tab
             "gui" -> handleGui(sender, args)
             "diverge" -> handleDiverge(sender, args)
             "prompt" -> handlePrompt(sender, args)
+            "goto" -> handleGoto(sender, args)
             else -> {
                 sendMsg(sender, "command.unknown")
                 true
@@ -263,6 +264,32 @@ class MainCommand(private val plugin: NemoriaQuestPlugin) : CommandExecutor, Tab
         return handled
     }
 
+    private fun handleGoto(sender: CommandSender, args: Array<out String>): Boolean {
+        if (!sender.hasPermission("nemoriaquest.command.goto")) {
+            sendMsg(sender, "command.no_permission")
+            return true
+        }
+        val player = sender as? org.bukkit.entity.Player
+        if (player == null) {
+            sendMsg(sender, "command.player_only")
+            return true
+        }
+        if (args.size < 4) {
+            sendMsg(sender, "command.goto.usage")
+            return true
+        }
+        val questId = args[1]
+        val branchId = args[2]
+        val nodeId = args[3]
+        val ok = Services.questService.gotoNode(player, questId, branchId, nodeId)
+        if (!ok) {
+            sendMsg(sender, "command.goto.fail", mapOf("quest" to questId, "branch" to branchId, "node" to nodeId))
+        } else {
+            sendMsg(sender, "command.goto.done", mapOf("quest" to questId, "branch" to branchId, "node" to nodeId))
+        }
+        return true
+    }
+
     override fun onTabComplete(
         sender: CommandSender,
         command: Command,
@@ -272,12 +299,21 @@ class MainCommand(private val plugin: NemoriaQuestPlugin) : CommandExecutor, Tab
         if (args.isEmpty()) return mutableListOf()
         return when (args.size) {
             1 -> {
-                val options = listOf("reload", "start", "stop", "active", "list", "info", "complete", "progress", "debug", "gui")
+                val options = listOf("reload", "start", "stop", "active", "list", "info", "complete", "progress", "debug", "gui", "goto")
                 options.filter { it.startsWith(args[0], ignoreCase = true) }.toMutableList()
             }
             2 -> when (args[0].lowercase()) {
                 "start", "stop", "info", "complete", "progress" -> questIds(args[1])
                 "gui" -> mutableListOf("active").filter { it.startsWith(args[1], ignoreCase = true) }.toMutableList()
+                "goto" -> questIds(args[1])
+                else -> mutableListOf()
+            }
+            3 -> when (args[0].lowercase()) {
+                "goto" -> branchIds(args[1], args[2])
+                else -> mutableListOf()
+            }
+            4 -> when (args[0].lowercase()) {
+                "goto" -> nodeIds(args[1], args[2], args[3])
                 else -> mutableListOf()
             }
             else -> mutableListOf()
@@ -289,6 +325,17 @@ class MainCommand(private val plugin: NemoriaQuestPlugin) : CommandExecutor, Tab
             .map { it.id }
             .filter { it.startsWith(prefix, ignoreCase = true) }
             .toMutableList()
+
+    private fun branchIds(questId: String, prefix: String): MutableList<String> {
+        val quest = Services.questService.questInfo(questId) ?: return mutableListOf()
+        return quest.branches.keys.filter { it.startsWith(prefix, ignoreCase = true) }.toMutableList()
+    }
+
+    private fun nodeIds(questId: String, branchId: String, prefix: String): MutableList<String> {
+        val quest = Services.questService.questInfo(questId) ?: return mutableListOf()
+        val branch = quest.branches[branchId] ?: return mutableListOf()
+        return branch.objects.keys.filter { it.startsWith(prefix, ignoreCase = true) }.toMutableList()
+    }
 
     private fun handleHelp(sender: CommandSender): Boolean {
         val version = plugin.description.version
