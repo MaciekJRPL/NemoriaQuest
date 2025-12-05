@@ -11,10 +11,16 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSy
 import net.nemoria.quest.runtime.ChatHideService
 import net.nemoria.quest.runtime.ChatHistoryManager
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
 import org.bukkit.entity.Player
 
 class ChatHidePacketListener : PacketListenerAbstract(PacketListenerPriority.NORMAL) {
     private val gson = GsonComponentSerializer.gson()
+    private val plain = PlainTextComponentSerializer.plainText()
+    private data class SeenEntry(val key: String, val time: Long)
+    private val seen: MutableMap<java.util.UUID, ArrayDeque<SeenEntry>> = java.util.concurrent.ConcurrentHashMap()
+    private val dedupWindowMs = 250L
+    private val maxSeen = 32
 
     override fun onPacketSend(event: PacketSendEvent) {
         val player = event.getPlayer<Player>() ?: return
@@ -41,7 +47,7 @@ class ChatHidePacketListener : PacketListenerAbstract(PacketListenerPriority.NOR
                     if (json != null) {
                         ChatHideService.bufferMessage(player.uniqueId, json)
                         runCatching { gson.deserialize(json) }.onSuccess { comp ->
-                            ChatHistoryManager.append(player.uniqueId, comp)
+                            appendIfFresh(player.uniqueId, "SYSTEM", comp)
                         }
                     }
                 }
@@ -51,11 +57,22 @@ class ChatHidePacketListener : PacketListenerAbstract(PacketListenerPriority.NOR
                     val gson = net.kyori.adventure.text.serializer.gson.GsonComponentSerializer.gson()
                     val json = gson.serialize(msg.chatContent)
                     ChatHideService.bufferMessage(player.uniqueId, json)
-                    ChatHistoryManager.append(player.uniqueId, msg.chatContent)
+                    appendIfFresh(player.uniqueId, "CHAT", msg.chatContent)
                 }
             }
             event.isCancelled = true
         }
+    }
+
+    private fun appendIfFresh(playerId: java.util.UUID, type: String, comp: net.kyori.adventure.text.Component) {
+        val key = "$type|${plain.serialize(comp)}"
+        val now = System.currentTimeMillis()
+        val queue = seen.computeIfAbsent(playerId) { ArrayDeque() }
+        val duplicate = queue.any { it.key == key && now - it.time <= dedupWindowMs }
+        if (duplicate) return
+        ChatHistoryManager.append(playerId, comp)
+        queue.addLast(SeenEntry(key, now))
+        while (queue.size > maxSeen) queue.removeFirst()
     }
 
     override fun onPacketReceive(event: PacketReceiveEvent) {
