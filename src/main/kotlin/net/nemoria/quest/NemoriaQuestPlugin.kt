@@ -29,6 +29,8 @@ import net.nemoria.quest.listener.PlayerMiscListener
 import net.nemoria.quest.config.GuiConfigLoader
 import net.nemoria.quest.hook.ChatHistoryPacketListener
 import net.nemoria.quest.runtime.PlayerBlockTracker
+import net.nemoria.quest.core.MessageFormatter
+import java.io.File
 
 class NemoriaQuestPlugin : JavaPlugin() {
     lateinit var coreConfig: CoreConfig
@@ -75,6 +77,7 @@ class NemoriaQuestPlugin : JavaPlugin() {
 
         ContentBootstrap(this, Services.storage.questModelRepo).bootstrap()
         loadGuiConfigs()
+        logQuestLoadSummary("log.content.action_loaded")
         server.pluginManager.registerEvents(net.nemoria.quest.gui.GuiListener(), this)
         server.pluginManager.registerEvents(net.nemoria.quest.listener.DivergeGuiListener(), this)
         server.pluginManager.registerEvents(ChatHideBukkitListener(), this)
@@ -95,6 +98,11 @@ class NemoriaQuestPlugin : JavaPlugin() {
 
     override fun onDisable() {
         if (::coreConfig.isInitialized) {
+            runCatching {
+                if (Services.hasQuestService()) {
+                    Services.questService.shutdown()
+                }
+            }
             runCatching { Services.storage.close() }
         }
         Services.scoreboardManager.stop()
@@ -110,6 +118,11 @@ class NemoriaQuestPlugin : JavaPlugin() {
         net.nemoria.quest.core.DebugLog.enabled = coreConfig.debugEnabled
         Services.i18n = I18n(coreConfig.locale, "en_US")
         val storageConfig = StorageConfigLoader(this).load()
+        runCatching {
+            if (Services.hasQuestService()) {
+                Services.questService.shutdown()
+            }
+        }
         runCatching { Services.storage.close() }
         initStorage(storageConfig)
         PlayerBlockTracker.init(Services.storage.playerBlockRepo)
@@ -124,6 +137,7 @@ class NemoriaQuestPlugin : JavaPlugin() {
         }
         ContentBootstrap(this, Services.storage.questModelRepo).bootstrap()
         resumeActiveBranches()
+        logQuestLoadSummary("log.content.action_reloaded")
         loadGuiConfigs()
         server.pluginManager.registerEvents(net.nemoria.quest.gui.GuiListener(), this)
         server.pluginManager.registerEvents(net.nemoria.quest.listener.DivergeGuiListener(), this)
@@ -165,14 +179,22 @@ class NemoriaQuestPlugin : JavaPlugin() {
     }
 
     private fun resumeActiveBranches() {
+        val scheduler = server.scheduler
         server.onlinePlayers.forEach { player ->
-            val data = Services.storage.userRepo.load(player.uniqueId)
-            data.activeQuests.forEach { qid ->
-                val model = Services.storage.questModelRepo.findById(qid) ?: return@forEach
-                if (model.branches.isNotEmpty()) {
-                    Services.questService.resumeBranch(player, model)
-                }
-            }
+            scheduler.runTaskAsynchronously(this, Runnable {
+                Services.questService.preload(player)
+                val active = Services.questService.activeQuests(player)
+                if (active.isEmpty()) return@Runnable
+                scheduler.runTask(this, Runnable {
+                    active.forEach { qid ->
+                        val model = Services.storage.questModelRepo.findById(qid) ?: return@forEach
+                        Services.questService.resumeTimers(player, model)
+                        if (model.branches.isNotEmpty()) {
+                            Services.questService.resumeBranch(player, model)
+                        }
+                    }
+                })
+            })
         }
     }
 
@@ -184,5 +206,28 @@ class NemoriaQuestPlugin : JavaPlugin() {
 
     private fun loadScoreboardConfig() {
         Services.scoreboardConfig = net.nemoria.quest.config.ScoreboardConfigLoader(this).load()
+    }
+
+    private fun logQuestLoadSummary(actionKey: String) {
+        val quests = Services.storage.questModelRepo.findAll()
+        val questCount = quests.size
+        val objectiveCount = quests.sumOf { it.objectives.size }
+        val branchCount = quests.sumOf { it.branches.size }
+        val filesCount = File(dataFolder, "content/quests")
+            .listFiles { f -> f.isFile && (f.extension.equals("yml", true) || f.extension.equals("yaml", true)) }
+            ?.size ?: 0
+        val action = Services.i18n.msg(actionKey)
+        val raw = Services.i18n.msg(
+            "log.content.summary",
+            mapOf(
+                "action" to action,
+                "quests" to questCount.toString(),
+                "objectives" to objectiveCount.toString(),
+                "branches" to branchCount.toString(),
+                "files" to filesCount.toString()
+            )
+        )
+        val msg = MessageFormatter.format(raw, allowCenter = false)
+        logger.info(msg)
     }
 }

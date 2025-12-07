@@ -12,7 +12,10 @@ import org.bukkit.OfflinePlayer
 import org.bukkit.entity.Player
 import org.bukkit.plugin.java.JavaPlugin
 import org.bukkit.scheduler.BukkitRunnable
+import org.bukkit.scheduler.BukkitTask
 import net.nemoria.quest.runtime.BranchRuntimeManager
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 class QuestService(
     private val plugin: JavaPlugin,
@@ -20,18 +23,78 @@ class QuestService(
     private val questRepo: QuestModelRepository
 ) {
     private val branchRuntime = BranchRuntimeManager(plugin, this)
+    private data class CachedUser(val data: net.nemoria.quest.data.user.UserData, var dirty: Boolean, var lastAccess: Long)
+    private val userCache: MutableMap<UUID, CachedUser> = ConcurrentHashMap()
+    private var flushTask: BukkitTask? = null
+    private val cacheTtlMs = 5 * 60 * 1000L
+    private val flushIntervalTicks = 20L
 
-    enum class StartResult { SUCCESS, NOT_FOUND, ALREADY_ACTIVE, COMPLETION_LIMIT, REQUIREMENT_FAIL, PERMISSION_FAIL, OFFLINE }
+    init {
+        startFlushTask()
+    }
+
+    enum class StartResult { SUCCESS, NOT_FOUND, ALREADY_ACTIVE, COMPLETION_LIMIT, REQUIREMENT_FAIL, CONDITION_FAIL, PERMISSION_FAIL, OFFLINE }
+
+    private fun cached(uuid: UUID): CachedUser {
+        val now = System.currentTimeMillis()
+        return userCache.compute(uuid) { _, existing ->
+            if (existing != null) {
+                existing.lastAccess = now
+                existing
+            } else {
+                CachedUser(userRepo.load(uuid), false, now)
+            }
+        }!!
+    }
+
+    private fun data(player: OfflinePlayer): net.nemoria.quest.data.user.UserData = cached(player.uniqueId).data
+
+    internal fun preload(player: OfflinePlayer) {
+        cached(player.uniqueId)
+    }
+
+    private fun markDirty(player: OfflinePlayer) {
+        cached(player.uniqueId).dirty = true
+    }
+
+    private fun startFlushTask() {
+        flushTask?.cancel()
+        flushTask = plugin.server.scheduler.runTaskTimer(plugin, Runnable { flushDirty() }, flushIntervalTicks, flushIntervalTicks)
+    }
+
+    fun shutdown() {
+        flushDirty(forceAll = true)
+        flushTask?.cancel()
+        flushTask = null
+        userCache.clear()
+    }
+
+    private fun flushDirty(forceAll: Boolean = false) {
+        val now = System.currentTimeMillis()
+        userCache.forEach { (_, cached) ->
+            if (forceAll || cached.dirty) {
+                userRepo.save(cached.data)
+                cached.dirty = false
+                cached.lastAccess = now
+            }
+        }
+        userCache.keys.forEach { uuid ->
+            userCache.computeIfPresent(uuid) { _, current ->
+                val expired = now - current.lastAccess > cacheTtlMs
+                if (!current.dirty && expired) null else current
+            }
+        }
+    }
 
     fun startQuest(player: OfflinePlayer, questId: String): StartResult {
         val model = questRepo.findById(questId) ?: return StartResult.NOT_FOUND
         net.nemoria.quest.core.DebugLog.log("startQuest questId=$questId player=${player.name}")
         val bukkitPlayer = player.player ?: return StartResult.OFFLINE
-        val data = userRepo.load(player.uniqueId)
+        val data = data(player)
         if (data.activeQuests.contains(questId)) return StartResult.ALREADY_ACTIVE
         if (model.completion.maxCompletions == 1 && data.completedQuests.contains(questId)) return StartResult.COMPLETION_LIMIT
         if (!requirementsMet(model, data)) return StartResult.REQUIREMENT_FAIL
-        if (!conditionsMet(model, bukkitPlayer)) return StartResult.PERMISSION_FAIL
+        if (!conditionsMet(model, bukkitPlayer)) return StartResult.CONDITION_FAIL
         data.activeQuests.add(model.id)
         val progress = QuestProgress()
         progress.variables.putAll(model.variables)
@@ -48,7 +111,7 @@ class QuestService(
             progress.currentNodeId = branchId?.let { b -> model.branches[b]?.startsAt ?: model.branches[b]?.objects?.keys?.firstOrNull() }
         }
         data.progress[questId] = progress
-        userRepo.save(data)
+        markDirty(player)
         if (model.branches.isNotEmpty()) {
             branchRuntime.start(player, model)
         }
@@ -56,19 +119,19 @@ class QuestService(
     }
 
     fun stopQuest(player: OfflinePlayer, questId: String, complete: Boolean) {
-        val data = userRepo.load(player.uniqueId)
+        val data = data(player)
         data.activeQuests.remove(questId)
         data.progress.remove(questId)
         if (complete) {
             data.completedQuests.add(questId)
             questRepo.findById(questId)?.let { applyRewards(player, it) }
         }
-        userRepo.save(data)
+        markDirty(player)
         branchRuntime.stop(player)
     }
 
     fun activeQuests(player: OfflinePlayer): Set<String> =
-        userRepo.load(player.uniqueId).activeQuests.toSet()
+        data(player).activeQuests.toSet()
 
     fun hasDiverge(player: OfflinePlayer): Boolean = branchRuntime.hasDiverge(player)
 
@@ -79,14 +142,14 @@ class QuestService(
         branchRuntime.acceptCurrentDiverge(player)
 
     fun progress(player: OfflinePlayer): Map<String, QuestProgress> =
-        userRepo.load(player.uniqueId).progress.toMap()
+        data(player).progress.toMap()
 
     fun listQuests(): Collection<QuestModel> = questRepo.findAll()
 
     fun questInfo(id: String): QuestModel? = questRepo.findById(id)
 
     fun gotoNode(player: org.bukkit.entity.Player, questId: String, branchId: String, nodeId: String): Boolean {
-        val data = userRepo.load(player.uniqueId)
+        val data = data(player)
         if (!data.activeQuests.contains(questId)) return false
         val model = questRepo.findById(questId) ?: return false
         if (!model.branches.containsKey(branchId)) return false
@@ -103,49 +166,49 @@ class QuestService(
         if (goalId.isNullOrBlank()) "$branchId:$nodeId" else "$branchId:$nodeId:$goalId"
 
     internal fun saveNodeProgress(player: OfflinePlayer, questId: String, branchId: String, nodeId: String, value: Double, goalId: String? = null) {
-        val data = userRepo.load(player.uniqueId)
+        val data = data(player)
         val qp = data.progress[questId] ?: return
         qp.nodeProgress[progressKey(branchId, nodeId, goalId)] = value
-        userRepo.save(data)
+        markDirty(player)
     }
 
     internal fun loadNodeProgress(player: OfflinePlayer, questId: String, branchId: String, nodeId: String, goalId: String? = null): Double {
-        val data = userRepo.load(player.uniqueId)
+        val data = data(player)
         val qp = data.progress[questId] ?: return 0.0
         return qp.nodeProgress[progressKey(branchId, nodeId, goalId)] ?: 0.0
     }
 
     internal fun loadNodeGoalProgress(player: OfflinePlayer, questId: String, branchId: String, nodeId: String): Map<String, Double> {
-        val data = userRepo.load(player.uniqueId)
+        val data = data(player)
         val qp = data.progress[questId] ?: return emptyMap()
         val prefix = progressKey(branchId, nodeId)
         return qp.nodeProgress.filterKeys { it.startsWith("$prefix:") }.mapKeys { it.key.removePrefix("$prefix:") }
     }
 
     internal fun clearNodeProgress(player: OfflinePlayer, questId: String, branchId: String, nodeId: String) {
-        val data = userRepo.load(player.uniqueId)
+        val data = data(player)
         val qp = data.progress[questId] ?: return
         val prefix = progressKey(branchId, nodeId)
         qp.nodeProgress.keys.removeIf { it == prefix || it.startsWith("$prefix:") }
-        userRepo.save(data)
+        markDirty(player)
     }
 
     internal fun clearAllNodeProgress(player: OfflinePlayer, questId: String) {
-        val data = userRepo.load(player.uniqueId)
+        val data = data(player)
         val qp = data.progress[questId] ?: return
         qp.nodeProgress.clear()
-        userRepo.save(data)
+        markDirty(player)
     }
 
     fun completeObjective(player: OfflinePlayer, questId: String, objectiveId: String) {
-        val data = userRepo.load(player.uniqueId)
+        val data = data(player)
         val progress = data.progress[questId] ?: return
         val state = progress.objectives[objectiveId] ?: return
         if (state.completed) return
         state.completed = true
         state.completedAt = System.currentTimeMillis()
         data.progress[questId] = progress
-        userRepo.save(data)
+        markDirty(player)
         val allDone = progress.objectives.values.all { it.completed }
         if (allDone) {
             finishOutcome(player, questId, "SUCCESS")
@@ -153,7 +216,7 @@ class QuestService(
     }
 
     fun incrementObjective(player: OfflinePlayer, questId: String, objectiveId: String, required: Int) {
-        val data = userRepo.load(player.uniqueId)
+        val data = data(player)
         val progress = data.progress[questId] ?: return
         val state = progress.objectives[objectiveId] ?: return
         if (state.completed) return
@@ -162,7 +225,7 @@ class QuestService(
             completeObjective(player, questId, objectiveId)
         } else {
             data.progress[questId] = progress
-            userRepo.save(data)
+            markDirty(player)
         }
     }
 
@@ -172,6 +235,35 @@ class QuestService(
                 completeObjective(player, questId, objectiveId)
             }
         }.runTaskLater(plugin, durationSeconds * 20)
+    }
+
+    fun resumeTimers(player: Player, model: QuestModel) {
+        val data = data(player)
+        val progress = data.progress[model.id] ?: return
+        val now = System.currentTimeMillis()
+        var changed = false
+        model.objectives.forEach { obj ->
+            if (obj.type == QuestObjectiveType.TIMER && obj.durationSeconds != null) {
+                val state = progress.objectives[obj.id] ?: return@forEach
+                if (state.completed) return@forEach
+                val started = state.startedAt ?: run {
+                    state.startedAt = now
+                    changed = true
+                    now
+                }
+                val remainingMs = obj.durationSeconds * 1000 - (now - started)
+                if (remainingMs <= 0) {
+                    completeObjective(player, model.id, obj.id)
+                } else {
+                    val remainingSec = (remainingMs + 999) / 1000
+                    scheduleTimer(player, model.id, obj.id, remainingSec)
+                }
+            }
+        }
+        if (changed) {
+            data.progress[model.id] = progress
+            markDirty(player)
+        }
     }
 
     private fun requirementsMet(model: QuestModel, data: net.nemoria.quest.data.user.UserData): Boolean {
@@ -371,20 +463,20 @@ class QuestService(
     internal fun runtime(): net.nemoria.quest.runtime.BranchRuntimeManager = branchRuntime
 
     internal fun mutateProgress(player: OfflinePlayer, questId: String, mutate: (QuestProgress) -> Unit) {
-        val data = userRepo.load(player.uniqueId)
+        val data = data(player)
         val progress = data.progress[questId] ?: return
         mutate(progress)
         data.progress[questId] = progress
-        userRepo.save(data)
+        markDirty(player)
     }
 
     internal fun updateBranchState(player: OfflinePlayer, questId: String, branchId: String, nodeId: String) {
-        val data = userRepo.load(player.uniqueId)
+        val data = data(player)
         val progress = data.progress[questId] ?: return
         progress.currentBranchId = branchId
         progress.currentNodeId = nodeId
         data.progress[questId] = progress
-        userRepo.save(data)
+        markDirty(player)
     }
 
     private fun render(text: String, model: QuestModel, player: OfflinePlayer): String {
@@ -435,13 +527,13 @@ class QuestService(
     }
 
     fun currentObjectiveDetail(player: org.bukkit.entity.Player): String? {
-        val data = userRepo.load(player.uniqueId)
+        val data = data(player)
         val questId = data.activeQuests.firstOrNull() ?: return null
         return currentObjectiveDetail(player, questId)
     }
 
     fun currentObjectiveDetail(player: org.bukkit.entity.Player, questId: String): String? {
-        val data = userRepo.load(player.uniqueId)
+        val data = data(player)
         val model = questRepo.findById(questId) ?: return null
         val prog = data.progress[questId]
         if (model.branches.isEmpty()) return null
@@ -466,22 +558,22 @@ class QuestService(
     }
 
     internal fun updateVariable(player: OfflinePlayer, questId: String, variable: String, value: String) {
-        val data = userRepo.load(player.uniqueId)
+        val data = data(player)
         val progress = data.progress[questId] ?: return
         progress.variables[variable] = value
         data.progress[questId] = progress
-        userRepo.save(data)
+        markDirty(player)
     }
 
     internal fun userVariable(player: OfflinePlayer, name: String): String {
         val key = name.lowercase()
-        val data = userRepo.load(player.uniqueId)
+        val data = data(player)
         val current = data.userVariables[key]
         if (current != null) return current
         val def = Services.variables.defaultUser(key)
         if (def != null) {
             data.userVariables[key] = def
-            userRepo.save(data)
+            markDirty(player)
             return def
         }
         return "0"
@@ -489,9 +581,9 @@ class QuestService(
 
     internal fun updateUserVariable(player: OfflinePlayer, name: String, value: String) {
         val key = name.lowercase()
-        val data = userRepo.load(player.uniqueId)
+        val data = data(player)
         data.userVariables[key] = value
-        userRepo.save(data)
+        markDirty(player)
     }
 
 

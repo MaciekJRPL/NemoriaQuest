@@ -151,10 +151,23 @@ class PlayerItemListener : Listener {
         val isPutNode = nodeType == net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_PUT
         val isTakeNode = nodeType == net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_TAKE
         val topType = event.view.topInventory.type.name
+        val isFurnaceLike = topType == InventoryType.FURNACE.name || topType == InventoryType.BLAST_FURNACE.name || topType == InventoryType.SMOKER.name
         if (event.view.topInventory.type == InventoryType.CRAFTING) return
         val clickedInv = if (event.rawSlot < event.view.topInventory.size) "TOP" else "BOTTOM"
         val cursor = event.cursor
         val stack = event.currentItem
+        if (isFurnaceLike && clickedInv == "TOP" && event.rawSlot == 2) {
+            val taken = when (event.action) {
+                InventoryAction.PICKUP_ALL, InventoryAction.PICKUP_HALF, InventoryAction.PICKUP_ONE, InventoryAction.PICKUP_SOME,
+                InventoryAction.MOVE_TO_OTHER_INVENTORY -> stack?.amount ?: 0
+                InventoryAction.HOTBAR_SWAP, InventoryAction.HOTBAR_MOVE_AND_READD -> stack?.amount ?: 0
+                else -> 0
+            }.coerceAtLeast(0)
+            repeat(taken) {
+                Services.questService.handlePlayerItemEvent(player, ItemEventType.MELT, stack?.let { org.bukkit.inventory.ItemStack(it.type, 1) })
+            }
+            return
+        }
         if (clickedInv == "TOP") {
             if (cursor != null && !cursor.type.isAir) {
                 if (isPutNode && isCounted(cursor, countedPutKey)) return
@@ -203,11 +216,22 @@ class PlayerItemListener : Listener {
         val nodeType = currentNodeType(player)
         val isPutNode = nodeType == net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_PUT
         val topType = event.view.topInventory.type.name
+        val isFurnaceLike = topType == InventoryType.FURNACE.name || topType == InventoryType.BLAST_FURNACE.name || topType == InventoryType.SMOKER.name
         if (event.view.topInventory.type == InventoryType.CRAFTING) return
         val cursor = event.oldCursor
         if (cursor == null || cursor.type.isAir) return
         if (isPutNode && isCounted(cursor, countedPutKey)) return
         val topSize = event.view.topInventory.size
+        if (isFurnaceLike) {
+            val resultSlot = 2
+            event.newItems[resultSlot]?.let { stack ->
+                val amt = stack.amount.coerceAtLeast(1)
+                repeat(amt) {
+                    Services.questService.handlePlayerItemEvent(player, ItemEventType.MELT, org.bukkit.inventory.ItemStack(stack.type, 1))
+                }
+            }
+            return
+        }
         event.newItems.forEach { (slot, stack) ->
             if (slot < topSize) {
                 val amt = stack.amount.coerceAtLeast(1)
@@ -221,15 +245,7 @@ class PlayerItemListener : Listener {
 
     @EventHandler
     fun onFurnaceExtract(event: FurnaceExtractEvent) {
-        val player = event.player
-        val mat = event.itemType
-        val amount = event.itemAmount.coerceAtLeast(1)
-        if (net.nemoria.quest.core.DebugLog.enabled) {
-            net.nemoria.quest.core.DebugLog.log("MELT_EVT player=${player.name} type=$mat amount=$amount")
-        }
-        repeat(amount) {
-            Services.questService.handlePlayerItemEvent(player, ItemEventType.MELT, org.bukkit.inventory.ItemStack(mat, 1))
-        }
+        // Obsługa przeniesiona do onInventoryClick/onInventoryDrag dla slotu wynikowego pieca
     }
 
     @EventHandler(ignoreCancelled = true)

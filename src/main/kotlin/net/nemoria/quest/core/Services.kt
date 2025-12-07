@@ -19,4 +19,6 @@ object Services {
     lateinit var guiDefault: GuiConfig
     lateinit var guiActive: GuiConfig
     lateinit var scoreboardConfig: net.nemoria.quest.config.ScoreboardConfig
+
+    fun hasQuestService(): Boolean = this::questService.isInitialized
 }

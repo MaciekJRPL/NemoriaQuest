@@ -9,6 +9,8 @@ import org.bukkit.Bukkit
 import org.bukkit.ChatColor
 import org.bukkit.entity.Player
 import org.bukkit.scheduler.BukkitRunnable
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 class ScoreboardManager {
     private var task: org.bukkit.scheduler.BukkitTask? = null
@@ -17,6 +19,19 @@ class ScoreboardManager {
         .hexColors()
         .build()
     private val entryPool = ChatColor.values().map { it.toString() }
+    private val cache: MutableMap<UUID, Snapshot> = ConcurrentHashMap()
+    private val inFlight: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
+    private val cacheTtlMs = 1000L
+    private val rendering: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
+
+    private data class Snapshot(
+        val questId: String?,
+        val questNamePlain: String?,
+        val detail: String?,
+        val showQuest: Boolean,
+        val version: String,
+        val timestamp: Long
+    )
 
     fun start() {
         stop()
@@ -32,13 +47,27 @@ class ScoreboardManager {
     fun stop() {
         task?.cancel()
         task = null
+        cache.clear()
+        inFlight.clear()
+        rendering.clear()
         Bukkit.getOnlinePlayers().forEach { clear(it) }
     }
 
     fun update(player: Player) {
-        val active = Services.storage.userRepo.load(player.uniqueId).activeQuests
-        val quest = active.firstOrNull()?.let { Services.questService.questInfo(it) }
-        val showQuest = quest != null && quest.progressNotify?.scoreboard == true
+        val now = System.currentTimeMillis()
+        val snap = cache[player.uniqueId]
+        if (snap == null) {
+            fetchAsync(player, rerender = true)
+            return
+        }
+        if (now - snap.timestamp > cacheTtlMs) {
+            fetchAsync(player, rerender = true)
+            return
+        }
+        val questId = snap.questId
+        val questNamePlain = snap.questNamePlain
+        val detailRaw = snap.detail
+        val showQuest = snap.showQuest
         val manager = Bukkit.getScoreboardManager() ?: return
         if (player.scoreboard == manager.mainScoreboard) {
             player.scoreboard = manager.newScoreboard
@@ -55,13 +84,9 @@ class ScoreboardManager {
         val cfg = Services.scoreboardConfig
         val version = Services.plugin.description.version
         val titleTemplate = if (cfg.title.contains("{version}")) cfg.title else (cfg.title + " <secondary>v{version}")
-        if (showQuest && quest != null) {
+        if (showQuest && questId != null && detailRaw != null && questNamePlain != null) {
             val title = formatAndLimit(titleTemplate, cfg.maxTitleLength, mapOf("version" to version))
             objective.displayName(legacy.deserialize(title))
-            val detailRaw = Services.questService.currentObjectiveDetail(player, quest.id)
-                ?: Services.i18n.msg("scoreboard.no_objective")
-            val questNamePlain = ChatColor.stripColor(MessageFormatter.formatLegacyOnly(quest.displayName ?: quest.name))
-                ?: (quest.displayName ?: quest.name)
             val placeholders = mapOf(
                 "quest_name" to questNamePlain,
                 "objective_detail" to detailRaw,
@@ -166,5 +191,47 @@ class ScoreboardManager {
     private fun clear(player: Player) {
         val sb = Bukkit.getScoreboardManager().newScoreboard
         player.scoreboard = sb
+    }
+
+    private fun fetchAsync(player: Player, rerender: Boolean) {
+        if (!inFlight.add(player.uniqueId)) return
+        Bukkit.getScheduler().runTaskAsynchronously(Services.plugin, Runnable {
+            try {
+                val active = Services.questService.activeQuests(player)
+                val questId = active.firstOrNull()
+                if (questId == null) {
+                    val ts = System.currentTimeMillis()
+                    cache[player.uniqueId] = Snapshot(null, null, null, false, Services.plugin.description.version, ts)
+                    return@Runnable
+                }
+                val quest = Services.questService.questInfo(questId)
+                if (quest == null || quest.progressNotify?.scoreboard != true) {
+                    val ts = System.currentTimeMillis()
+                    cache[player.uniqueId] = Snapshot(null, null, null, false, Services.plugin.description.version, ts)
+                    return@Runnable
+                }
+                val detail = Services.questService.currentObjectiveDetail(player, questId)
+                    ?: Services.i18n.msg("scoreboard.no_objective")
+                val questNamePlain = ChatColor.stripColor(MessageFormatter.formatLegacyOnly(quest.displayName ?: quest.name))
+                    ?: (quest.displayName ?: quest.name)
+                val ts = System.currentTimeMillis()
+                cache[player.uniqueId] = Snapshot(questId, questNamePlain, detail, true, Services.plugin.description.version, ts)
+            } finally {
+                inFlight.remove(player.uniqueId)
+                if (rerender) {
+                    Bukkit.getScheduler().runTask(Services.plugin, Runnable {
+                        // guard to avoid re-entrancy loops
+                        if (!rendering.add(player.uniqueId)) return@Runnable
+                        try {
+                            if (player.isOnline) {
+                                update(player)
+                            }
+                        } finally {
+                            rendering.remove(player.uniqueId)
+                        }
+                    })
+                }
+            }
+        })
     }
 }

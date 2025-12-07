@@ -71,6 +71,8 @@ class MainCommand(private val plugin: NemoriaQuestPlugin) : CommandExecutor, Tab
                 sendMsg(sender, "command.start.limit_reached", mapOf("quest" to args[1]))
             net.nemoria.quest.quest.QuestService.StartResult.REQUIREMENT_FAIL ->
                 sendMsg(sender, "command.start.requirements", mapOf("quest" to args[1]))
+            net.nemoria.quest.quest.QuestService.StartResult.CONDITION_FAIL ->
+                sendMsg(sender, "command.start.conditions", mapOf("quest" to args[1]))
             net.nemoria.quest.quest.QuestService.StartResult.PERMISSION_FAIL ->
                 sendMsg(sender, "command.start.permission", mapOf("quest" to args[1]))
             net.nemoria.quest.quest.QuestService.StartResult.OFFLINE ->

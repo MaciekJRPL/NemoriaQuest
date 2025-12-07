@@ -10,6 +10,7 @@ command:
     already_active: "<prefix><secondary>Quest <primary>{quest} is already active."
     limit_reached: "<prefix><error>Quest <primary>{quest} cannot be started (completion limit)."
     requirements: "<prefix><error>Requirements not met for quest <primary>{quest}."
+    conditions: "<prefix><error>Start conditions not met for quest <primary>{quest}."
     permission: "<prefix><error>You lack permission to start quest <primary>{quest}."
   stop:
     usage: "<prefix><secondary>Usage: <primary>/nq stop <questId>"
@@ -59,3 +60,8 @@ help:
     - " <primary>/nq complete <id> <dark>- <secondary>Mark quest completed"
     - " <primary>/nq reload <dark>- <secondary>Reload config"
     - ""
+log:
+  content:
+    action_loaded: "Loaded"
+    action_reloaded: "Reloaded"
+    summary: "<primary>{action}</primary> <secondary>{quests}</secondary> quests, <secondary>{objectives}</secondary> objectives, <secondary>{branches}</secondary> branches, files: <secondary>{files}</secondary>"

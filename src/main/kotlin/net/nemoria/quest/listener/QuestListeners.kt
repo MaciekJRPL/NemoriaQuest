@@ -19,10 +19,9 @@ class QuestListeners : Listener {
     fun onEntityDeath(event: EntityDeathEvent) {
         val killer = event.entity.killer ?: return
         val type = event.entity.type
-        val data = Services.storage.userRepo
-        val active = data.load(killer.uniqueId).activeQuests
-        if (active.isEmpty()) return
         val questService = Services.questService
+        val active = questService.activeQuests(killer)
+        if (active.isEmpty()) return
         active.forEach { questId ->
             val model = Services.storage.questModelRepo.findById(questId) ?: return@forEach
             model.objectives.filter { it.type == QuestObjectiveType.KILL_MOB }.forEach { obj ->
@@ -38,10 +37,9 @@ class QuestListeners : Listener {
     fun onPickup(event: EntityPickupItemEvent) {
         val player = event.entity as? Player ?: return
         val mat = event.item.itemStack.type
-        val data = Services.storage.userRepo
-        val active = data.load(player.uniqueId).activeQuests
-        if (active.isEmpty()) return
         val questService = Services.questService
+        val active = questService.activeQuests(player)
+        if (active.isEmpty()) return
         active.forEach { questId ->
             val model = Services.storage.questModelRepo.findById(questId) ?: return@forEach
             model.objectives.filter { it.type == QuestObjectiveType.COLLECT_ITEM }.forEach { obj ->
@@ -60,10 +58,9 @@ class QuestListeners : Listener {
     fun onMove(event: PlayerMoveEvent) {
         if (event.from.toVector() == event.to?.toVector()) return
         val player = event.player
-        val data = Services.storage.userRepo
-        val active = data.load(player.uniqueId).activeQuests
-        if (active.isEmpty()) return
         val questService = Services.questService
+        val active = questService.activeQuests(player)
+        if (active.isEmpty()) return
         val to = event.to ?: return
         active.forEach { questId ->
             val model = Services.storage.questModelRepo.findById(questId) ?: return@forEach
@@ -82,12 +79,14 @@ class QuestListeners : Listener {
     @EventHandler
     fun onJoin(event: PlayerJoinEvent) {
         val player = event.player
-        val data = Services.storage.userRepo.load(player.uniqueId)
-        if (data.activeQuests.isEmpty()) return
-        data.activeQuests.forEach { questId ->
+        val questService = Services.questService
+        val active = questService.activeQuests(player)
+        if (active.isEmpty()) return
+        val progress = questService.progress(player)
+        active.forEach { questId ->
             val model = Services.storage.questModelRepo.findById(questId) ?: return@forEach
-            val branchId = data.progress[questId]?.currentBranchId
-            val nodeId = data.progress[questId]?.currentNodeId
+            val branchId = progress[questId]?.currentBranchId
+            val nodeId = progress[questId]?.currentNodeId
             val nodeType = branchId?.let { bid -> nodeId?.let { nid -> model.branches[bid]?.objects?.get(nid)?.type } }
             val resumableTypes = setOf(
                 net.nemoria.quest.quest.QuestObjectNodeType.NPC_INTERACT,
