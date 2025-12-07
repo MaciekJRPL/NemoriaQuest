@@ -417,6 +417,23 @@ class QuestService(
     private fun fmtNumber(value: Double): String =
         if (value % 1.0 == 0.0) value.toLong().toString() else "%.2f".format(value)
 
+    private fun prioritizedGoals(node: QuestObjectNode): List<Double> = when {
+        node.blockGoals.isNotEmpty() -> node.blockGoals.map { it.goal }
+        node.itemGoals.isNotEmpty() -> node.itemGoals.map { it.goal }
+        node.goals.isNotEmpty() -> node.goals.map { it.goal }
+        else -> emptyList()
+    }
+
+    private fun goalValue(node: QuestObjectNode): Double {
+        val goals = prioritizedGoals(node)
+        return when {
+            goals.isNotEmpty() -> goals.sum()
+            node.distanceGoal != null -> node.distanceGoal
+            node.count != null -> node.count.toDouble()
+            else -> 1.0
+        }
+    }
+
     fun currentObjectiveDetail(player: org.bukkit.entity.Player): String? {
         val data = userRepo.load(player.uniqueId)
         val questId = data.activeQuests.firstOrNull() ?: return null
@@ -433,8 +450,16 @@ class QuestService(
         val node = model.branches[branchId]?.objects?.get(nodeId) ?: return null
         val desc = node.description ?: return null
         val base = renderPlaceholders(desc, questId, player)
-        val progressVal = loadNodeProgress(player, questId, branchId, node.id)
-        val goalVal = node.distanceGoal ?: node.count?.toDouble() ?: 1.0
+        val progressVal = run {
+            val goals = prioritizedGoals(node)
+            if (goals.isNotEmpty()) {
+                val goalsMap = loadNodeGoalProgress(player, questId, branchId, node.id)
+                if (goalsMap.isNotEmpty()) goalsMap.values.sum() else loadNodeProgress(player, questId, branchId, node.id)
+            } else {
+                loadNodeProgress(player, questId, branchId, node.id)
+            }
+        }
+        val goalVal = goalValue(node)
         return base
             .replace("{progress}", fmtNumber(progressVal))
             .replace("{goal}", fmtNumber(goalVal))

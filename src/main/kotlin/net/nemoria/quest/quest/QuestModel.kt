@@ -332,7 +332,8 @@ data class ItemStackConfig(
     val type: String,
     val name: String? = null,
     val lore: List<String> = emptyList(),
-    val customModelData: Int? = null
+    val customModelData: Int? = null,
+    val potionType: String? = null
 )
 
 data class ItemModifyOptions(

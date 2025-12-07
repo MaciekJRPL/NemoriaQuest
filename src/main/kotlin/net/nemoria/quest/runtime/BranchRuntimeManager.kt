@@ -1748,6 +1748,14 @@ class BranchRuntimeManager(
             seen.add(villagerId)
         }
 
+        if ((kind == ItemEventType.BREW || kind == ItemEventType.MELT) && DebugLog.enabled) {
+            val meta = item?.itemMeta as? org.bukkit.inventory.meta.PotionMeta
+            val goalsDesc = node.itemGoals.joinToString { g ->
+                g.items.joinToString { it.type + ":" + (it.potionType ?: "") }
+            }
+            DebugLog.log("ITEM_EVT kind=$kind player=${player.name} item=${item?.type} base=${meta?.basePotionType?.name} goals=$goalsDesc")
+        }
+
         if (node.itemInventoryTypes.isNotEmpty() && inventoryType != null && node.itemInventoryTypes.none { it.equals(inventoryType, true) }) {
             return
         }
@@ -1771,7 +1779,13 @@ class BranchRuntimeManager(
                 matchedItem != null -> goal.items.any { matchesItem(it, matchedItem) }
                 else -> false
             }
-            if (!matchOk) return@forEach
+            if (!matchOk) {
+                if ((kind == ItemEventType.BREW || kind == ItemEventType.MELT) && DebugLog.enabled) {
+                    val goalDesc = goal.items.joinToString { it.type + ":" + (it.potionType ?: "") }
+                    DebugLog.log("ITEM_SKIP kind=$kind player=${player.name} goal=${goal.id} items=$goalDesc stack=${matchedItem?.type}")
+                }
+                return@forEach
+            }
 
             when (node.type) {
                 QuestObjectNodeType.PLAYER_ITEMS_REQUIRE -> {
@@ -1781,7 +1795,11 @@ class BranchRuntimeManager(
                     val progMap = session.itemProgress.getOrPut(node.id) { mutableMapOf() }
                     val cur = progMap.getOrDefault(goal.id, 0.0)
                     progMap[goal.id] = cur + 1.0
+                    questService.saveNodeProgress(player, model.id, session.branchId, node.id, progMap[goal.id]!!, goal.id)
                     progressed = true
+                    if ((kind == ItemEventType.BREW || kind == ItemEventType.MELT) && DebugLog.enabled) {
+                        DebugLog.log("ITEM_PROG kind=$kind player=${player.name} goal=${goal.id} new=${progMap[goal.id]} need=${goal.goal}")
+                    }
                     if (goal.take && matchedItem != null) {
                         removeOne(player, matchedItem)
                     }
@@ -1800,6 +1818,7 @@ class BranchRuntimeManager(
         val progMap = session.itemProgress[node.id] ?: return
         val allDone = goals.all { g -> (progMap[g.id] ?: 0.0) >= g.goal }
         if (allDone) {
+            questService.clearNodeProgress(player, model.id, session.branchId, node.id)
             val gotoRaw = node.goto ?: return
             val target = normalizeTarget(gotoRaw)
             runNode(player, model, session.branchId, target, 0)
@@ -1829,6 +1848,15 @@ class BranchRuntimeManager(
 
     private fun matchesItem(goal: ItemStackConfig, stack: ItemStack): Boolean {
         if (!goal.type.equals(stack.type.name, true)) return false
+        if (goal.potionType != null) {
+            val meta = stack.itemMeta as? org.bukkit.inventory.meta.PotionMeta ?: return false
+            val base = meta.basePotionType
+            val baseName = base?.name
+            val baseKey = base?.key?.key
+            if (!(goal.potionType.equals(baseName, true) || goal.potionType.equals(baseKey, true))) {
+                return false
+            }
+        }
         // shallow checks only; ignore name/lore/customModelData for now
         return true
     }

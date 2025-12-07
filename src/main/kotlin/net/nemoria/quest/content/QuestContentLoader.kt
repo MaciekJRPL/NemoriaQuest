@@ -601,7 +601,8 @@ object QuestContentLoader {
             type = type,
             name = sec.getString("name"),
             lore = sec.getStringList("lore"),
-            customModelData = if (sec.isInt("custom_model_data")) sec.getInt("custom_model_data") else null
+            customModelData = if (sec.isInt("custom_model_data")) sec.getInt("custom_model_data") else null,
+            potionType = sec.getString("potion_type")
         )
     }
 

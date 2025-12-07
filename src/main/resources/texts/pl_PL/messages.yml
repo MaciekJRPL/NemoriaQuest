@@ -39,6 +39,10 @@ command:
     usage: "<prefix><primary>Użycie: /nq debug <on|off>"
     enabled: "<prefix><success>Debug włączony."
     disabled: "<prefix><secondary>Debug wyłączony."
+  goto:
+    usage: "<prefix><primary>Użycie: /nq goto <questId> <branchId> <nodeId>"
+    fail: "<prefix><error>Nie mogę przeskoczyć do <primary>{quest}:{branch}:{node}. Sprawdź misję, gałąź, węzeł i status."
+    done: "<prefix><success>Przeskoczono do <primary>{quest}:{branch}:{node}."
 scoreboard:
   no_objective: "<secondary>Brak celu"
   empty: "<secondary>Nie mam nic do wyświetlenia"
@@ -55,3 +59,5 @@ help:
     - " <primary>/nq complete <id> <dark>- <secondary>Oznacz jako ukończoną"
     - " <primary>/nq reload <dark>- <secondary>Przeładuj konfigurację"
     - ""
+
+

@@ -2,6 +2,7 @@ package net.nemoria.quest.listener
 
 import net.nemoria.quest.core.Services
 import net.nemoria.quest.runtime.BranchRuntimeManager.ItemEventType
+import org.bukkit.Location
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
@@ -12,12 +13,56 @@ import org.bukkit.event.player.*
 import org.bukkit.event.entity.PlayerDeathEvent
 import org.bukkit.event.entity.EntityPickupItemEvent
 import org.bukkit.event.entity.ProjectileLaunchEvent
+import org.bukkit.NamespacedKey
 import io.papermc.paper.event.player.PlayerInventorySlotChangeEvent
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 class PlayerItemListener : Listener {
+    private val runtime = Services.questService.runtime()
     private val pickupAcquireSkip: MutableMap<UUID, Int> = ConcurrentHashMap()
+    private val brewerOwner: MutableMap<Location, Pair<UUID, Long>> = ConcurrentHashMap()
+    private val brewerTtlMs = 2 * 60 * 1000L
+    private val countedPutKey = NamespacedKey(Services.plugin, "nq_counted_put")
+    private val countedTakeKey = NamespacedKey(Services.plugin, "nq_counted_take")
+
+    private fun pruneBrewers(now: Long = System.currentTimeMillis()) {
+        val expired = brewerOwner.filterValues { now - it.second > brewerTtlMs }.keys
+        expired.forEach { brewerOwner.remove(it) }
+    }
+
+    private fun isCounted(stack: org.bukkit.inventory.ItemStack?, key: NamespacedKey): Boolean {
+        val meta = stack?.itemMeta ?: return false
+        return meta.persistentDataContainer.has(key, org.bukkit.persistence.PersistentDataType.BYTE)
+    }
+
+    private fun markCounted(stack: org.bukkit.inventory.ItemStack?, key: NamespacedKey) {
+        val meta = stack?.itemMeta ?: return
+        meta.persistentDataContainer.set(key, org.bukkit.persistence.PersistentDataType.BYTE, 1)
+        stack.itemMeta = meta
+    }
+
+    private fun hasActiveSession(player: Player): Boolean =
+        runtime.getQuestId(player) != null
+
+    private fun currentNodeType(player: Player): net.nemoria.quest.quest.QuestObjectNodeType? {
+        val questId = runtime.getQuestId(player) ?: return null
+        val model = Services.storage.questModelRepo.findById(questId) ?: return null
+        val progress = Services.questService.progress(player)[questId]
+        val branchId = progress?.currentBranchId ?: model.mainBranch ?: model.branches.keys.firstOrNull() ?: return null
+        val nodeId = progress?.currentNodeId ?: model.branches[branchId]?.startsAt ?: model.branches[branchId]?.objects?.keys?.firstOrNull()
+        return model.branches[branchId]?.objects?.get(nodeId)?.type
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    fun onBrewerOpen(event: InventoryOpenEvent) {
+        val player = event.player as? Player ?: return
+        if (event.inventory.type != InventoryType.BREWING) return
+        val holder = event.inventory.holder as? org.bukkit.block.BrewingStand ?: return
+        val loc = holder.location.toBlockLocation()
+        brewerOwner[loc] = player.uniqueId to System.currentTimeMillis()
+        pruneBrewers()
+    }
 
     @EventHandler(ignoreCancelled = true)
     fun onPickup(event: EntityPickupItemEvent) {
@@ -52,6 +97,30 @@ class PlayerItemListener : Listener {
     }
 
     @EventHandler(ignoreCancelled = true)
+    fun onBrew(event: BrewEvent) {
+        val player = event.contents.viewers.firstOrNull { it is Player } as? Player
+            ?: run {
+                val loc = event.block.location.toBlockLocation()
+                pruneBrewers()
+                val entry = brewerOwner[loc] ?: return
+                brewerOwner[loc] = entry.first to System.currentTimeMillis()
+                val ownerId = entry.first
+                org.bukkit.Bukkit.getPlayer(ownerId)
+            }
+            ?: return
+        val inv = event.contents
+        val playerId = player.uniqueId
+        Services.plugin.server.scheduler.runTask(Services.plugin, Runnable {
+            val live = org.bukkit.Bukkit.getPlayer(playerId) ?: return@Runnable
+            for (slot in 0..2) {
+                val item = inv.getItem(slot) ?: continue
+                if (item.type.isAir) continue
+                Services.questService.handlePlayerItemEvent(live, ItemEventType.BREW, item)
+            }
+        })
+    }
+
+    @EventHandler(ignoreCancelled = true)
     fun onRepair(event: PrepareAnvilEvent) {
         val player = event.view.player as? Player ?: return
         val result = event.result ?: return
@@ -77,13 +146,49 @@ class PlayerItemListener : Listener {
     @EventHandler(ignoreCancelled = true)
     fun onInventoryClick(event: InventoryClickEvent) {
         val player = event.whoClicked as? Player ?: return
+        if (!hasActiveSession(player)) return
+        val nodeType = currentNodeType(player)
+        val isPutNode = nodeType == net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_PUT
+        val isTakeNode = nodeType == net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_TAKE
         val topType = event.view.topInventory.type.name
+        if (event.view.topInventory.type == InventoryType.CRAFTING) return
         val clickedInv = if (event.rawSlot < event.view.topInventory.size) "TOP" else "BOTTOM"
+        val cursor = event.cursor
         val stack = event.currentItem
         if (clickedInv == "TOP") {
-            Services.questService.handlePlayerItemEvent(player, ItemEventType.CONTAINER_TAKE, stack, inventoryType = topType, slot = event.rawSlot)
+            if (cursor != null && !cursor.type.isAir) {
+                if (isPutNode && isCounted(cursor, countedPutKey)) return
+                val amt = cursor.amount.coerceAtLeast(1)
+                repeat(amt) {
+                    Services.questService.handlePlayerItemEvent(player, ItemEventType.CONTAINER_PUT, org.bukkit.inventory.ItemStack(cursor.type, 1), inventoryType = topType, slot = event.rawSlot)
+                }
+                if (isPutNode) markCounted(cursor, countedPutKey)
+            } else if (stack != null && !stack.type.isAir && event.action == InventoryAction.MOVE_TO_OTHER_INVENTORY) {
+                if (isTakeNode && isCounted(stack, countedTakeKey)) return
+                val amt = stack.amount.coerceAtLeast(1)
+                repeat(amt) {
+                    Services.questService.handlePlayerItemEvent(player, ItemEventType.CONTAINER_TAKE, org.bukkit.inventory.ItemStack(stack.type, 1), inventoryType = topType, slot = event.rawSlot)
+                }
+                if (isTakeNode) markCounted(stack, countedTakeKey)
+            }
         } else {
-            Services.questService.handlePlayerItemEvent(player, ItemEventType.CONTAINER_PUT, event.cursor ?: stack, inventoryType = topType, slot = event.rawSlot)
+            val putSource = cursor ?: stack
+            val isShiftMove = event.action == InventoryAction.MOVE_TO_OTHER_INVENTORY
+            if (putSource != null && !putSource.type.isAir) {
+                if (isPutNode && isCounted(putSource, countedPutKey)) return
+                val amt = putSource.amount.coerceAtLeast(1)
+                repeat(amt) {
+                    Services.questService.handlePlayerItemEvent(player, ItemEventType.CONTAINER_PUT, org.bukkit.inventory.ItemStack(putSource.type, 1), inventoryType = topType, slot = event.rawSlot)
+                }
+                if (isPutNode) markCounted(putSource, countedPutKey)
+            } else if (isShiftMove && stack != null && !stack.type.isAir) {
+                if (isPutNode && isCounted(stack, countedPutKey)) return
+                val amt = stack.amount.coerceAtLeast(1)
+                repeat(amt) {
+                    Services.questService.handlePlayerItemEvent(player, ItemEventType.CONTAINER_PUT, org.bukkit.inventory.ItemStack(stack.type, 1), inventoryType = topType, slot = event.rawSlot)
+                }
+                if (isPutNode) markCounted(stack, countedPutKey)
+            }
         }
         if (topType == InventoryType.MERCHANT.name) {
             val villagerId = (event.view.topInventory.holder as? org.bukkit.entity.Villager)?.uniqueId
@@ -94,13 +199,36 @@ class PlayerItemListener : Listener {
     @EventHandler(ignoreCancelled = true)
     fun onInventoryDrag(event: InventoryDragEvent) {
         val player = event.whoClicked as? Player ?: return
+        if (!hasActiveSession(player)) return
+        val nodeType = currentNodeType(player)
+        val isPutNode = nodeType == net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_PUT
         val topType = event.view.topInventory.type.name
-        event.rawSlots.forEach { slot ->
-            if (slot < event.view.topInventory.size) {
-                Services.questService.handlePlayerItemEvent(player, ItemEventType.CONTAINER_TAKE, event.oldCursor, inventoryType = topType, slot = slot)
-            } else {
-                Services.questService.handlePlayerItemEvent(player, ItemEventType.CONTAINER_PUT, event.oldCursor, inventoryType = topType, slot = slot)
+        if (event.view.topInventory.type == InventoryType.CRAFTING) return
+        val cursor = event.oldCursor
+        if (cursor == null || cursor.type.isAir) return
+        if (isPutNode && isCounted(cursor, countedPutKey)) return
+        val topSize = event.view.topInventory.size
+        event.newItems.forEach { (slot, stack) ->
+            if (slot < topSize) {
+                val amt = stack.amount.coerceAtLeast(1)
+                repeat(amt) {
+                    Services.questService.handlePlayerItemEvent(player, ItemEventType.CONTAINER_PUT, org.bukkit.inventory.ItemStack(stack.type, 1), inventoryType = topType, slot = slot)
+                }
             }
+        }
+        if (isPutNode) markCounted(cursor, countedPutKey)
+    }
+
+    @EventHandler
+    fun onFurnaceExtract(event: FurnaceExtractEvent) {
+        val player = event.player
+        val mat = event.itemType
+        val amount = event.itemAmount.coerceAtLeast(1)
+        if (net.nemoria.quest.core.DebugLog.enabled) {
+            net.nemoria.quest.core.DebugLog.log("MELT_EVT player=${player.name} type=$mat amount=$amount")
+        }
+        repeat(amount) {
+            Services.questService.handlePlayerItemEvent(player, ItemEventType.MELT, org.bukkit.inventory.ItemStack(mat, 1))
         }
     }
 
