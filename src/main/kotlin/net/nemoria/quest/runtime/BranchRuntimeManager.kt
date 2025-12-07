@@ -298,7 +298,7 @@ class BranchRuntimeManager(
                         } else false
                     }
                 } else targets
-                val pick = (filtered.ifEmpty { targets }).randomOrNull() ?: return
+                val pick = filtered.ifEmpty { targets }.randomOrNull() ?: return
                 if (pick.startsWith("QUEST_", true)) {
                     val endType = pick.removePrefix("QUEST_").uppercase()
                     questService.mutateProgress(player, model.id) { it.randomHistory.add(endType) }
@@ -342,7 +342,6 @@ class BranchRuntimeManager(
                 node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_LOGIC_MONEY -> {
-                // TODO: integrate with economy; for now just run actions as commands
                 val amount = evalFormula(node.valueFormula, 0.0)
                 if (node.currency.equals("VAULT", true)) {
                     val cmd = "eco give ${p.name} ${amount.toInt()}"
@@ -2011,7 +2010,7 @@ class BranchRuntimeManager(
             }
             val removed = inv.removeItemAnySlot(ItemStack(mat, required))
             val leftover = removed.values.sumOf { it.amount }
-            taken += (required - leftover)
+            taken += required - leftover
         }
         return taken
     }
@@ -2288,25 +2287,26 @@ class BranchRuntimeManager(
     }
 
     private fun matchEntity(entity: org.bukkit.entity.Entity, goal: EntityGoal): Boolean {
-        if (goal.types.isNotEmpty() && goal.types.none { t -> entity.type.name.equals(t, true) }) return false
-        if (goal.names.isNotEmpty()) {
+        val typeOk = goal.types.isEmpty() || goal.types.any { t -> entity.type.name.equals(t, true) }
+        val nameOk = goal.names.isEmpty() || run {
             val name = entity.customName()?.let { PlainTextComponentSerializer.plainText().serialize(it) }?.lowercase()
-            if (name == null || goal.names.none { it.equals(name, true) }) return false
+            name != null && goal.names.any { it.equals(name, true) }
         }
-        if (goal.colors.isNotEmpty()) {
-            val allowed = goal.colors.mapNotNull { runCatching { org.bukkit.DyeColor.valueOf(it.uppercase()) }.getOrNull() }
-            val entityColor = when (entity) {
-                is Sheep -> entity.color
-                else -> null
-            }
-            if (allowed.isNotEmpty() && (entityColor == null || entityColor !in allowed)) return false
+        val allowedColors = goal.colors.mapNotNull { runCatching { org.bukkit.DyeColor.valueOf(it.uppercase()) }.getOrNull() }
+        val entityColor = when (entity) {
+            is Sheep -> entity.color
+            else -> null
         }
-        if ((goal.horseColors.isNotEmpty() || goal.horseStyles.isNotEmpty()) && entity is Horse) {
-            val colorOk = goal.horseColors.isEmpty() || goal.horseColors.any { runCatching { Horse.Color.valueOf(it.uppercase()) }.getOrNull() == entity.color }
-            val styleOk = goal.horseStyles.isEmpty() || goal.horseStyles.any { runCatching { Horse.Style.valueOf(it.uppercase()) }.getOrNull() == entity.style }
-            if (!colorOk || !styleOk) return false
+        val colorOk = allowedColors.isEmpty() || (entityColor != null && entityColor in allowedColors)
+        val horseOk = if (goal.horseColors.isEmpty() && goal.horseStyles.isEmpty()) {
+            true
+        } else {
+            if (entity !is Horse) return false
+            val hColorOk = goal.horseColors.isEmpty() || goal.horseColors.any { runCatching { Horse.Color.valueOf(it.uppercase()) }.getOrNull() == entity.color }
+            val hStyleOk = goal.horseStyles.isEmpty() || goal.horseStyles.any { runCatching { Horse.Style.valueOf(it.uppercase()) }.getOrNull() == entity.style }
+            hColorOk && hStyleOk
         }
-        return true
+        return typeOk && nameOk && colorOk && horseOk
     }
 
     private fun processEntities(player: OfflinePlayer, questId: String, node: QuestObjectNode, action: (org.bukkit.entity.LivingEntity, Double) -> Unit): Int {

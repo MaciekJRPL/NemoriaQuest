@@ -238,8 +238,7 @@ class NemoriaQuestPlugin : JavaPlugin() {
                 "files" to filesCount.toString()
             )
         )
-        val sanitized = raw.replace("<\\/?(primary|secondary|dark|success|error|info|admin)>".toRegex(), "")
-        val colored = MessageFormatter.format(sanitized, allowCenter = false)
+        val colored = MessageFormatter.format(raw, allowCenter = false)
         server.consoleSender.sendMessage(colored)
     }
 }
