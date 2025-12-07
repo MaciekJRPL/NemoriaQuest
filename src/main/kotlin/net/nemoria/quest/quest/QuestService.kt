@@ -25,6 +25,7 @@ class QuestService(
     private val branchRuntime = BranchRuntimeManager(plugin, this)
     private data class CachedUser(val data: net.nemoria.quest.data.user.UserData, var dirty: Boolean, var lastAccess: Long)
     private val userCache: MutableMap<UUID, CachedUser> = ConcurrentHashMap()
+    private val questTimeLimitTasks: MutableMap<UUID, MutableMap<String, BukkitTask>> = ConcurrentHashMap()
     private var flushTask: BukkitTask? = null
     private val cacheTtlMs = 5 * 60 * 1000L
     private val flushIntervalTicks = 20L
@@ -66,6 +67,8 @@ class QuestService(
         flushDirty(forceAll = true)
         flushTask?.cancel()
         flushTask = null
+        questTimeLimitTasks.values.forEach { inner -> inner.values.forEach { it.cancel() } }
+        questTimeLimitTasks.clear()
         userCache.clear()
     }
 
@@ -104,6 +107,9 @@ class QuestService(
                 scheduleTimer(player, questId, obj.id, obj.durationSeconds)
             }
         }
+        if (model.timeLimit != null) {
+            progress.timeLimitStartedAt = System.currentTimeMillis()
+        }
         // set initial branch state
         if (model.branches.isNotEmpty()) {
             val branchId = model.mainBranch ?: model.branches.keys.firstOrNull()
@@ -114,6 +120,8 @@ class QuestService(
         markDirty(player)
         if (model.branches.isNotEmpty()) {
             branchRuntime.start(player, model)
+        } else {
+            scheduleQuestTimeLimit(player, model)
         }
         return StartResult.SUCCESS
     }
@@ -127,6 +135,7 @@ class QuestService(
             questRepo.findById(questId)?.let { applyRewards(player, it) }
         }
         markDirty(player)
+        cancelQuestTimeLimit(player, questId)
         branchRuntime.stop(player)
     }
 
@@ -235,6 +244,51 @@ class QuestService(
                 completeObjective(player, questId, objectiveId)
             }
         }.runTaskLater(plugin, durationSeconds * 20)
+    }
+
+    private fun scheduleQuestTimeLimit(player: OfflinePlayer, model: QuestModel) {
+        val tl = model.timeLimit ?: return
+        if (model.branches.isNotEmpty()) return
+        val startedAt = ensureTimeLimitStart(player, model.id)
+        val remainingMs = tl.durationSeconds * 1000 - (System.currentTimeMillis() - startedAt)
+        if (remainingMs <= 0) {
+            tl.failGoto?.let { /* brak gałęzi, goto ignorujemy */ }
+            finishOutcome(player, model.id, "FAIL")
+            return
+        }
+        val ticks = ((remainingMs + 49) / 50).coerceAtLeast(1)
+        val task = object : BukkitRunnable() {
+            override fun run() {
+                tl.failGoto?.let { /* brak gałęzi, goto ignorujemy */ }
+                finishOutcome(player, model.id, "FAIL")
+            }
+        }.runTaskLater(plugin, ticks)
+        questTimeLimitTasks.computeIfAbsent(player.uniqueId) { ConcurrentHashMap() }[model.id]?.cancel()
+        questTimeLimitTasks[player.uniqueId]?.put(model.id, task)
+    }
+
+    private fun cancelQuestTimeLimit(player: OfflinePlayer, questId: String) {
+        questTimeLimitTasks[player.uniqueId]?.remove(questId)?.cancel()
+        if (questTimeLimitTasks[player.uniqueId]?.isEmpty() == true) {
+            questTimeLimitTasks.remove(player.uniqueId)
+        }
+    }
+
+    internal fun ensureTimeLimitStart(player: OfflinePlayer, questId: String): Long {
+        val data = data(player)
+        val progress = data.progress[questId] ?: return System.currentTimeMillis()
+        val existing = progress.timeLimitStartedAt
+        if (existing != null) return existing
+        val now = System.currentTimeMillis()
+        progress.timeLimitStartedAt = now
+        data.progress[questId] = progress
+        markDirty(player)
+        return now
+    }
+
+    fun resumeQuestTimeLimit(player: OfflinePlayer, model: QuestModel) {
+        if (model.timeLimit == null || model.branches.isNotEmpty()) return
+        scheduleQuestTimeLimit(player, model)
     }
 
     fun resumeTimers(player: Player, model: QuestModel) {

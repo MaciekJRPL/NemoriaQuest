@@ -10,27 +10,55 @@ import org.bukkit.event.player.PlayerJoinEvent
 import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.event.player.PlayerRespawnEvent
 import org.bukkit.event.player.PlayerAdvancementDoneEvent
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 class PlayerMiscListener : Listener {
+    private val chatBypass: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
+    private val commandBypass: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
+
     @EventHandler(ignoreCancelled = true)
     fun onChat(event: AsyncPlayerChatEvent) {
-        val cancel = Services.questService.handlePlayerMiscEvent(
-            event.player,
-            BranchRuntimeManager.MiscEventType.CHAT,
-            event.message
-        )
-        if (cancel) event.isCancelled = true
+        if (chatBypass.remove(event.player.uniqueId)) return
+        val player = event.player
+        val message = event.message
+        event.isCancelled = true
+        Services.plugin.server.scheduler.runTask(Services.plugin, Runnable {
+            val cancel = Services.questService.handlePlayerMiscEvent(
+                player,
+                BranchRuntimeManager.MiscEventType.CHAT,
+                message
+            )
+            if (cancel) return@Runnable
+            chatBypass.add(player.uniqueId)
+            try {
+                player.chat(message)
+            } finally {
+                chatBypass.remove(player.uniqueId)
+            }
+        })
     }
 
     @EventHandler(ignoreCancelled = true)
     fun onCommand(event: PlayerCommandPreprocessEvent) {
+        if (commandBypass.remove(event.player.uniqueId)) return
+        val player = event.player
         val msg = event.message.removePrefix("/").trim()
-        val cancel = Services.questService.handlePlayerMiscEvent(
-            event.player,
-            BranchRuntimeManager.MiscEventType.CHAT,
-            msg
-        )
-        if (cancel) event.isCancelled = true
+        event.isCancelled = true
+        Services.plugin.server.scheduler.runTask(Services.plugin, Runnable {
+            val cancel = Services.questService.handlePlayerMiscEvent(
+                player,
+                BranchRuntimeManager.MiscEventType.CHAT,
+                msg
+            )
+            if (cancel) return@Runnable
+            commandBypass.add(player.uniqueId)
+            try {
+                player.performCommand(msg)
+            } finally {
+                commandBypass.remove(player.uniqueId)
+            }
+        })
     }
 
     @EventHandler

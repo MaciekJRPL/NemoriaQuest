@@ -144,6 +144,17 @@ class BranchRuntimeManager(
         session.nodeId = startNodeId
         runNode(player, model, branchId, startNodeId, 0L)
         model.timeLimit?.let { tl ->
+            val startedAt = questService.ensureTimeLimitStart(player, model.id)
+            val elapsedMs = System.currentTimeMillis() - startedAt
+            val remainingMs = tl.durationSeconds * 1000 - elapsedMs
+            if (remainingMs <= 0) {
+                stop(player)
+                tl.failGoto?.let { goto ->
+                    handleGoto(player, model, branchId, goto, 0)
+                } ?: questService.finishOutcome(player, model.id, "FAIL")
+                return
+            }
+            val ticks = ((remainingMs + 49) / 50).coerceAtLeast(1)
             session.timeLimitTask = object : BukkitRunnable() {
                 override fun run() {
                     stop(player)
@@ -151,7 +162,7 @@ class BranchRuntimeManager(
                         handleGoto(player, model, branchId, goto, 0)
                     } ?: questService.finishOutcome(player, model.id, "FAIL")
                 }
-            }.runTaskLater(plugin, tl.durationSeconds * 20)
+            }.runTaskLater(plugin, ticks)
         }
     }
 

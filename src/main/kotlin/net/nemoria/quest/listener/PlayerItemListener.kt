@@ -157,10 +157,17 @@ class PlayerItemListener : Listener {
         val cursor = event.cursor
         val stack = event.currentItem
         if (isFurnaceLike && clickedInv == "TOP" && event.rawSlot == 2) {
+            val stackAmt = stack?.amount ?: 0
             val taken = when (event.action) {
-                InventoryAction.PICKUP_ALL, InventoryAction.PICKUP_HALF, InventoryAction.PICKUP_ONE, InventoryAction.PICKUP_SOME,
-                InventoryAction.MOVE_TO_OTHER_INVENTORY -> stack?.amount ?: 0
-                InventoryAction.HOTBAR_SWAP, InventoryAction.HOTBAR_MOVE_AND_READD -> stack?.amount ?: 0
+                InventoryAction.PICKUP_ALL,
+                InventoryAction.MOVE_TO_OTHER_INVENTORY,
+                InventoryAction.HOTBAR_SWAP,
+                InventoryAction.HOTBAR_MOVE_AND_READD,
+                InventoryAction.COLLECT_TO_CURSOR,
+                InventoryAction.DROP_ALL_SLOT -> stackAmt
+                InventoryAction.PICKUP_HALF -> (stackAmt + 1) / 2
+                InventoryAction.PICKUP_ONE,
+                InventoryAction.DROP_ONE_SLOT -> if (stackAmt > 0) 1 else 0
                 else -> 0
             }.coerceAtLeast(0)
             repeat(taken) {
@@ -223,13 +230,6 @@ class PlayerItemListener : Listener {
         if (isPutNode && isCounted(cursor, countedPutKey)) return
         val topSize = event.view.topInventory.size
         if (isFurnaceLike) {
-            val resultSlot = 2
-            event.newItems[resultSlot]?.let { stack ->
-                val amt = stack.amount.coerceAtLeast(1)
-                repeat(amt) {
-                    Services.questService.handlePlayerItemEvent(player, ItemEventType.MELT, org.bukkit.inventory.ItemStack(stack.type, 1))
-                }
-            }
             return
         }
         event.newItems.forEach { (slot, stack) ->

@@ -15,6 +15,7 @@ data class QuestProgress(
     val variables: MutableMap<String, String> = mutableMapOf(),
     var currentBranchId: String? = null,
     var currentNodeId: String? = null,
+    var timeLimitStartedAt: Long? = null,
     val randomHistory: MutableSet<String> = mutableSetOf(),
     val groupState: MutableMap<String, GroupProgress> = mutableMapOf(),
     val divergeCounts: MutableMap<String, Int> = mutableMapOf(),

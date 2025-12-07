@@ -107,6 +107,7 @@ class NemoriaQuestPlugin : JavaPlugin() {
         }
         Services.scoreboardManager.stop()
         net.nemoria.quest.runtime.ChatHideService.clear()
+        org.bukkit.event.HandlerList.unregisterAll(this)
         packetEvents?.terminate()
         logger.info("NemoriaQuest disabled")
     }
@@ -136,6 +137,7 @@ class NemoriaQuestPlugin : JavaPlugin() {
             net.nemoria.quest.hook.PlaceholderHook().register()
         }
         ContentBootstrap(this, Services.storage.questModelRepo).bootstrap()
+        org.bukkit.event.HandlerList.unregisterAll(this)
         resumeActiveBranches()
         logQuestLoadSummary("log.content.action_reloaded")
         loadGuiConfigs()
@@ -191,6 +193,8 @@ class NemoriaQuestPlugin : JavaPlugin() {
                         Services.questService.resumeTimers(player, model)
                         if (model.branches.isNotEmpty()) {
                             Services.questService.resumeBranch(player, model)
+                        } else {
+                            Services.questService.resumeQuestTimeLimit(player, model)
                         }
                     }
                 })
