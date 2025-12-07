@@ -179,6 +179,19 @@ class BranchRuntimeManager(
         session.entityProgress.clear()
         session.positionActionbarHint.clear()
         questService.clearAllNodeProgress(player, model.id)
+        // zresetuj bieżący węzeł, aby nie zaliczał się na starcie
+        val currentNode = branch.objects[nodeId]
+        if (currentNode != null) {
+            questService.clearNodeProgress(player, model.id, branchId, nodeId)
+            when {
+                isMovementNode(currentNode.type) -> session.movementProgress[nodeId] = 0.0
+                isPhysicalNode(currentNode.type) -> session.physicalProgress[nodeId] = 0.0
+                isMiscNode(currentNode.type) -> session.miscProgress[nodeId] = 0.0
+                isPlayerItemNode(currentNode.type) -> session.itemProgress[nodeId] = mutableMapOf()
+                isPlayerBlockNode(currentNode.type) -> session.blockProgress[nodeId] = mutableMapOf()
+                isPlayerEntityNode(currentNode.type) -> session.entityProgress[nodeId] = mutableMapOf()
+            }
+        }
         val hadDialog = divergeSessions.remove(player.uniqueId) != null
         if (hadDialog) {
             ChatHideService.flushBufferedToHistory(player.uniqueId)
@@ -231,6 +244,10 @@ class BranchRuntimeManager(
         questService.updateBranchState(player, model.id, branchId, node.id)
         if (node.type != QuestObjectNodeType.DIVERGE_CHAT) {
             sendStartNotify(p, node)
+        }
+        if (node.type == QuestObjectNodeType.PLAYER_TOGGLE_SNEAK) {
+            questService.clearNodeProgress(player, model.id, branchId, node.id)
+            sessions[player.uniqueId]?.physicalProgress?.put(node.id, 0.0)
         }
         when (node.type) {
             QuestObjectNodeType.NONE -> {
@@ -1278,6 +1295,12 @@ class BranchRuntimeManager(
             listOf(EntityGoal(goal = node.count.toDouble().coerceAtLeast(1.0), id = "default"))
         }
 
+        if (node.type == QuestObjectNodeType.PLAYER_TURTLES_BREED) {
+            net.nemoria.quest.core.DebugLog.log(
+                "TURTLE_BREED_CHECK player=${player.name} kind=$kind targetType=$targetType goals=${goals.map { it.id + ':' + it.goal }}"
+            )
+        }
+
         var progressed = false
         goals.forEach { goal ->
             val goalId = goal.id.ifBlank { "default" }
@@ -1311,6 +1334,12 @@ class BranchRuntimeManager(
             progMap[goalId] = updated
             questService.saveNodeProgress(player, model.id, session.branchId, node.id, updated, goalId)
             progressed = true
+        }
+
+        if (node.type == QuestObjectNodeType.PLAYER_TURTLES_BREED && !progressed) {
+            net.nemoria.quest.core.DebugLog.log(
+                "TURTLE_BREED_NO_PROGRESS player=${player.name} kind=$kind targetType=$targetType counted=${counted.size}"
+            )
         }
 
         if (progressed && entityId != null) counted.add(entityId)
@@ -1455,6 +1484,38 @@ class BranchRuntimeManager(
         val branch = model.branches[session.branchId] ?: return
         val node = branch.objects[session.nodeId] ?: return
         if (!isPhysicalNode(node.type)) return
+        val typeMatches = when (node.type) {
+            QuestObjectNodeType.PLAYER_BED_ENTER -> kind == PhysicalEventType.BED_ENTER
+            QuestObjectNodeType.PLAYER_BED_LEAVE -> kind == PhysicalEventType.BED_LEAVE
+            QuestObjectNodeType.PLAYER_BUCKET_FILL -> kind == PhysicalEventType.BUCKET_FILL
+            QuestObjectNodeType.PLAYER_BURN -> kind == PhysicalEventType.BURN
+            QuestObjectNodeType.PLAYER_DIE -> kind == PhysicalEventType.DIE
+            QuestObjectNodeType.PLAYER_GAIN_HEALTH -> kind == PhysicalEventType.GAIN_HEALTH
+            QuestObjectNodeType.PLAYER_GAIN_XP -> kind == PhysicalEventType.GAIN_XP
+            QuestObjectNodeType.PLAYER_PORTAL_ENTER -> kind == PhysicalEventType.PORTAL_ENTER
+            QuestObjectNodeType.PLAYER_PORTAL_LEAVE -> kind == PhysicalEventType.PORTAL_LEAVE
+            QuestObjectNodeType.PLAYER_SHOOT_PROJECTILE -> kind == PhysicalEventType.SHOOT_PROJECTILE
+            QuestObjectNodeType.PLAYER_SNEAK -> kind == PhysicalEventType.SNEAK_TIME
+            QuestObjectNodeType.PLAYER_TAKE_DAMAGE -> kind == PhysicalEventType.TAKE_DAMAGE
+            QuestObjectNodeType.PLAYER_TOGGLE_SNEAK -> kind == PhysicalEventType.TOGGLE_SNEAK
+            QuestObjectNodeType.PLAYER_VEHICLE_ENTER -> kind == PhysicalEventType.VEHICLE_ENTER
+            QuestObjectNodeType.PLAYER_VEHICLE_LEAVE -> kind == PhysicalEventType.VEHICLE_LEAVE
+            else -> true
+        }
+        if (!typeMatches && (node.type == QuestObjectNodeType.PLAYER_BED_ENTER || node.type == QuestObjectNodeType.PLAYER_BED_LEAVE)) {
+            DebugLog.log(
+                "PHYS_BED_SKIP player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} type=${node.type} kind=$kind detail=$detail"
+            )
+            return
+        }
+        if (!typeMatches) {
+            if (node.type == QuestObjectNodeType.PLAYER_VEHICLE_ENTER || node.type == QuestObjectNodeType.PLAYER_VEHICLE_LEAVE) {
+                DebugLog.log(
+                    "PHYS_VEHICLE_SKIP player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} type=${node.type} kind=$kind detail=$detail"
+                )
+            }
+            return
+        }
 
         if (node.type == QuestObjectNodeType.PLAYER_BUCKET_FILL && node.bucketType != null) {
             if (detail == null || !node.bucketType.equals(detail, true)) return
@@ -1462,16 +1523,45 @@ class BranchRuntimeManager(
         if (node.type == QuestObjectNodeType.PLAYER_SHOOT_PROJECTILE && node.projectileTypes.isNotEmpty()) {
             if (detail == null || node.projectileTypes.none { it.equals(detail, true) }) return
         }
-        if ((node.type == QuestObjectNodeType.PLAYER_VEHICLE_ENTER || node.type == QuestObjectNodeType.PLAYER_VEHICLE_LEAVE) &&
-            node.vehicleType != null
-        ) {
-            if (detail == null || !node.vehicleType.equals(detail, true)) return
+        val vehicleDetail = if (detail != null && (node.type == QuestObjectNodeType.PLAYER_VEHICLE_ENTER || node.type == QuestObjectNodeType.PLAYER_VEHICLE_LEAVE)) {
+            val upper = detail.uppercase()
+            if (node.vehicleType?.equals("BOAT", true) == true && upper.endsWith("BOAT")) "BOAT" else upper
+        } else detail
+
+        if ((node.type == QuestObjectNodeType.PLAYER_VEHICLE_ENTER || node.type == QuestObjectNodeType.PLAYER_VEHICLE_LEAVE) && node.vehicleType != null) {
+            if (vehicleDetail == null || !node.vehicleType.equals(vehicleDetail, true)) return
         }
         if (node.type == QuestObjectNodeType.PLAYER_GAIN_HEALTH && node.regainCauses.isNotEmpty()) {
             if (detail == null || node.regainCauses.none { it.equals(detail, true) }) return
         }
         if (node.type == QuestObjectNodeType.PLAYER_TAKE_DAMAGE && node.damageCauses.isNotEmpty()) {
             if (detail == null || node.damageCauses.none { it.equals(detail, true) }) return
+        }
+
+        if (node.type == QuestObjectNodeType.PLAYER_BED_ENTER || node.type == QuestObjectNodeType.PLAYER_BED_LEAVE) {
+            DebugLog.log(
+                "PHYS_BED player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} type=${node.type} kind=$kind detail=$detail"
+            )
+        }
+        if (node.type == QuestObjectNodeType.PLAYER_GAIN_HEALTH) {
+            DebugLog.log(
+                "PHYS_GAIN_HEALTH player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} kind=$kind add=$amount cause=$detail goal=${node.distanceGoal ?: node.count} prev=${session.physicalProgress.getOrDefault(node.id, 0.0)}"
+            )
+        }
+        if (node.type == QuestObjectNodeType.PLAYER_VEHICLE_ENTER || node.type == QuestObjectNodeType.PLAYER_VEHICLE_LEAVE) {
+            DebugLog.log(
+                "PHYS_VEHICLE player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} type=${node.type} kind=$kind detail=$vehicleDetail goal=${node.distanceGoal ?: node.count} prev=${session.physicalProgress.getOrDefault(node.id, 0.0)}"
+            )
+        }
+        if (node.type == QuestObjectNodeType.PLAYER_SHOOT_PROJECTILE) {
+            DebugLog.log(
+                "PHYS_PROJECTILE player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} kind=$kind add=$amount detail=$detail goal=${node.distanceGoal ?: node.count} prev=${session.physicalProgress.getOrDefault(node.id, 0.0)}"
+            )
+        }
+        if (node.type == QuestObjectNodeType.PLAYER_BURN) {
+            DebugLog.log(
+                "PHYS_BURN player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} kind=$kind add=$amount goal=${node.distanceGoal ?: node.count} prev=${session.physicalProgress.getOrDefault(node.id, 0.0)}"
+            )
         }
 
         val goal = node.distanceGoal ?: node.count.toDouble().coerceAtLeast(1.0)
@@ -1537,7 +1627,8 @@ class BranchRuntimeManager(
                     questService.updateVariable(player, model.id, node.chatStoreVariable, text)
                 }
                 incrementMisc(node, session, player, model, 1.0)
-                return false
+                MessageFormatter.send(player, "<primary> [${player.name}]<secondary> $text")
+                return true // blokuj publiczny czat
             }
             QuestObjectNodeType.PLAYER_ACHIEVEMENT_AWARD -> {
                 if (kind != MiscEventType.ACHIEVEMENT) return false
@@ -1626,6 +1717,27 @@ class BranchRuntimeManager(
         val branch = model.branches[session.branchId] ?: return
         val node = branch.objects[session.nodeId] ?: return
         if (!isPlayerItemNode(node.type)) return
+
+        val typeMatches = when (node.type) {
+            QuestObjectNodeType.PLAYER_ITEMS_ACQUIRE -> kind == ItemEventType.ACQUIRE
+            QuestObjectNodeType.PLAYER_ITEMS_BREW -> kind == ItemEventType.BREW
+            QuestObjectNodeType.PLAYER_ITEMS_CONSUME -> kind == ItemEventType.CONSUME
+            QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_PUT -> kind == ItemEventType.CONTAINER_PUT
+            QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_TAKE -> kind == ItemEventType.CONTAINER_TAKE
+            QuestObjectNodeType.PLAYER_ITEMS_CRAFT -> kind == ItemEventType.CRAFT
+            QuestObjectNodeType.PLAYER_ITEMS_DROP -> kind == ItemEventType.DROP
+            QuestObjectNodeType.PLAYER_ITEMS_ENCHANT -> kind == ItemEventType.ENCHANT
+            QuestObjectNodeType.PLAYER_ITEMS_FISH -> kind == ItemEventType.FISH
+            QuestObjectNodeType.PLAYER_ITEMS_INTERACT -> kind == ItemEventType.INTERACT
+            QuestObjectNodeType.PLAYER_ITEMS_MELT -> kind == ItemEventType.MELT
+            QuestObjectNodeType.PLAYER_ITEMS_PICKUP -> kind == ItemEventType.PICKUP
+            QuestObjectNodeType.PLAYER_ITEMS_REPAIR -> kind == ItemEventType.REPAIR
+            QuestObjectNodeType.PLAYER_ITEMS_REQUIRE -> kind == ItemEventType.ACQUIRE || kind == ItemEventType.PICKUP
+            QuestObjectNodeType.PLAYER_ITEMS_THROW -> kind == ItemEventType.THROW
+            QuestObjectNodeType.PLAYER_ITEMS_TRADE -> kind == ItemEventType.TRADE
+            else -> false
+        }
+        if (!typeMatches) return
 
         if (!node.tradeAllowSameVillagers && villagerId != null) {
             val seen = session.villagerCounted.getOrPut(node.id) { mutableSetOf() }
@@ -1740,15 +1852,18 @@ class BranchRuntimeManager(
         val inv = player.inventory
         val stacks = inv.contents.filterNotNull()
         if (itemsReq.isNotEmpty()) {
-            return itemsReq.all { cfg ->
+            val ok = itemsReq.all { cfg ->
                 stacks.any { it.type.name.equals(cfg.type, true) && it.amount >= 1 }
             }
+            DebugLog.log("REQUIRE_CHECK itemsReq=${itemsReq.map { it.type }} ok=$ok")
+            return ok
         }
         return goals.all { g ->
             val needed = g.goal.toInt()
             val matchedCount = if (g.items.isEmpty()) stacks.sumOf { it.amount } else {
                 stacks.filter { st -> g.items.any { it.type.equals(st.type.name, true) } }.sumOf { it.amount }
             }
+            DebugLog.log("REQUIRE_CHECK goal=${g.id} needed=$needed matched=$matchedCount items=${g.items.map { it.type }}")
             matchedCount >= needed
         }
     }

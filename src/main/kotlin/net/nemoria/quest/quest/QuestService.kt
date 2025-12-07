@@ -414,6 +414,9 @@ class QuestService(
         return out
     }
 
+    private fun fmtNumber(value: Double): String =
+        if (value % 1.0 == 0.0) value.toLong().toString() else "%.2f".format(value)
+
     fun currentObjectiveDetail(player: org.bukkit.entity.Player): String? {
         val data = userRepo.load(player.uniqueId)
         val questId = data.activeQuests.firstOrNull() ?: return null
@@ -429,7 +432,12 @@ class QuestService(
         val nodeId = prog?.currentNodeId ?: model.branches[branchId]?.startsAt ?: model.branches[branchId]?.objects?.keys?.firstOrNull()
         val node = model.branches[branchId]?.objects?.get(nodeId) ?: return null
         val desc = node.description ?: return null
-        return renderPlaceholders(desc, questId, player)
+        val base = renderPlaceholders(desc, questId, player)
+        val progressVal = loadNodeProgress(player, questId, branchId, node.id)
+        val goalVal = node.distanceGoal ?: node.count?.toDouble() ?: 1.0
+        return base
+            .replace("{progress}", fmtNumber(progressVal))
+            .replace("{goal}", fmtNumber(goalVal))
     }
 
     internal fun updateVariable(player: OfflinePlayer, questId: String, variable: String, value: String) {

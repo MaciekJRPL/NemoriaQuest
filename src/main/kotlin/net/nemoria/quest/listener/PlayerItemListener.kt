@@ -12,12 +12,18 @@ import org.bukkit.event.player.*
 import org.bukkit.event.entity.PlayerDeathEvent
 import org.bukkit.event.entity.EntityPickupItemEvent
 import org.bukkit.event.entity.ProjectileLaunchEvent
+import io.papermc.paper.event.player.PlayerInventorySlotChangeEvent
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 class PlayerItemListener : Listener {
+    private val pickupAcquireSkip: MutableMap<UUID, Int> = ConcurrentHashMap()
+
     @EventHandler(ignoreCancelled = true)
     fun onPickup(event: EntityPickupItemEvent) {
         val player = event.entity as? Player ?: return
         Services.questService.handlePlayerItemEvent(player, ItemEventType.PICKUP, event.item.itemStack)
+        pickupAcquireSkip[player.uniqueId] = pickupAcquireSkip.getOrDefault(player.uniqueId, 0) + 1
         Services.questService.handlePlayerItemEvent(player, ItemEventType.ACQUIRE, event.item.itemStack)
     }
 
@@ -111,5 +117,22 @@ class PlayerItemListener : Listener {
         event.drops.forEach { stack ->
             Services.questService.handlePlayerItemEvent(player, ItemEventType.ACQUIRE, stack)
         }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    fun onSlotChange(event: PlayerInventorySlotChangeEvent) {
+        val skip = pickupAcquireSkip[event.player.uniqueId]
+        if (skip != null && skip > 0) {
+            if (skip <= 1) pickupAcquireSkip.remove(event.player.uniqueId) else pickupAcquireSkip[event.player.uniqueId] = skip - 1
+            return
+        }
+        val old = event.oldItemStack
+        val new = event.newItemStack
+        if (new == null || new.type.isAir) return
+        val sameType = old != null && !old.type.isAir && old.type == new.type
+        val oldAmount = if (sameType) old.amount else 0
+        val delta = new.amount - oldAmount
+        if (delta <= 0) return
+        Services.questService.handlePlayerItemEvent(event.player, ItemEventType.ACQUIRE, new)
     }
 }

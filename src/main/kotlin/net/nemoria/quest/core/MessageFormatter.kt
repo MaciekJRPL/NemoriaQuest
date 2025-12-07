@@ -14,7 +14,7 @@ object MessageFormatter {
     private fun applyColors(text: String): String {
         var out = text
         Colors.placeholders().forEach { (k, v) ->
-            out = out.replace("<$k>", v)
+            out = out.replace("<$k>", v, ignoreCase = true)
         }
         return out
     }
