@@ -5,6 +5,7 @@ import com.google.gson.reflect.TypeToken
 import com.zaxxer.hikari.HikariDataSource
 import net.nemoria.quest.data.repo.QuestModelRepository
 import net.nemoria.quest.quest.*
+import java.util.concurrent.ConcurrentHashMap
 
 class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : QuestModelRepository {
     private val gson = Gson()
@@ -16,8 +17,14 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
     private val branchesType = object : TypeToken<Map<String, Branch>>() {}.type
     private val variablesType = object : TypeToken<Map<String, String>>() {}.type
     private val endObjectsType = object : TypeToken<Map<String, List<QuestEndObject>>>() {}.type
+    private val cache: MutableMap<String, QuestModel> = ConcurrentHashMap()
+
+    init {
+        loadAllToCache()
+    }
 
     override fun findById(id: String): QuestModel? {
+        cache[id]?.let { return it }
         dataSource.connection.use { conn ->
             conn.prepareStatement(
                 "SELECT name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators FROM quest_model WHERE id = ?"
@@ -25,7 +32,7 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
                 ps.setString(1, id)
                 ps.executeQuery().use { rs ->
                     if (rs.next()) {
-                        return QuestModel(
+                        val model = QuestModel(
                             id = id,
                             name = rs.getString("name"),
                             description = rs.getString("description"),
@@ -48,6 +55,8 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
                             mainBranch = rs.getString("main_branch"),
                             endObjects = parseEndObjects(rs.getString("end_objects"))
                         )
+                        cache[id] = model
+                        return model
                     }
                 }
             }
@@ -56,6 +65,7 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
     }
 
     override fun findAll(): Collection<QuestModel> {
+        if (cache.isNotEmpty()) return cache.values
         val list = mutableListOf<QuestModel>()
         dataSource.connection.use { conn ->
             conn.prepareStatement(
@@ -63,31 +73,31 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
             ).use { ps ->
                 ps.executeQuery().use { rs ->
                     while (rs.next()) {
-                        list.add(
-                            QuestModel(
-                                id = rs.getString("id"),
-                                name = rs.getString("name"),
-                                description = rs.getString("description"),
-                                displayName = rs.getString("display_name"),
-                                descriptionLines = parseDescriptionLines(rs.getString("description_lines")),
-                                progressNotify = parseProgressNotify(rs.getString("progress_notify")),
-                                statusItems = parseStatusItems(rs.getString("status_items")),
-                                requirements = parseRequirements(rs.getString("requirements")),
-                                objectives = parseObjectives(rs.getString("objectives")),
-                                rewards = parseRewards(rs.getString("rewards")),
-                                saving = parseSaving(rs.getString("saving")),
-                                concurrency = parseConcurrency(rs.getString("concurrency")),
-                                players = parsePlayers(rs.getString("players")),
-                                startConditions = parseStartConditions(rs.getString("start_conditions")),
-                                completion = parseCompletion(rs.getString("completion")),
-                                activators = parseActivators(rs.getString("activators")),
-                                timeLimit = parseTimeLimit(rs.getString("time_limit")),
-                                variables = parseVariables(rs.getString("variables")),
-                                branches = parseBranches(rs.getString("branches")),
-                                mainBranch = rs.getString("main_branch"),
-                                endObjects = parseEndObjects(rs.getString("end_objects"))
-                            )
+                        val model = QuestModel(
+                            id = rs.getString("id"),
+                            name = rs.getString("name"),
+                            description = rs.getString("description"),
+                            displayName = rs.getString("display_name"),
+                            descriptionLines = parseDescriptionLines(rs.getString("description_lines")),
+                            progressNotify = parseProgressNotify(rs.getString("progress_notify")),
+                            statusItems = parseStatusItems(rs.getString("status_items")),
+                            requirements = parseRequirements(rs.getString("requirements")),
+                            objectives = parseObjectives(rs.getString("objectives")),
+                            rewards = parseRewards(rs.getString("rewards")),
+                            saving = parseSaving(rs.getString("saving")),
+                            concurrency = parseConcurrency(rs.getString("concurrency")),
+                            players = parsePlayers(rs.getString("players")),
+                            startConditions = parseStartConditions(rs.getString("start_conditions")),
+                            completion = parseCompletion(rs.getString("completion")),
+                            activators = parseActivators(rs.getString("activators")),
+                            timeLimit = parseTimeLimit(rs.getString("time_limit")),
+                            variables = parseVariables(rs.getString("variables")),
+                            branches = parseBranches(rs.getString("branches")),
+                            mainBranch = rs.getString("main_branch"),
+                            endObjects = parseEndObjects(rs.getString("end_objects"))
                         )
+                        cache[model.id] = model
+                        list.add(model)
                     }
                 }
             }
@@ -128,6 +138,12 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
                 ps.executeUpdate()
             }
         }
+        cache[model.id] = model
+    }
+
+    private fun loadAllToCache() {
+        cache.clear()
+        findAll()
     }
 
     private fun parseObjectives(raw: String?): List<QuestObjective> {

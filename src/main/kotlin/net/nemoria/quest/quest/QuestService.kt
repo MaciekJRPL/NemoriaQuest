@@ -16,6 +16,7 @@ import org.bukkit.scheduler.BukkitTask
 import net.nemoria.quest.runtime.BranchRuntimeManager
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import net.nemoria.quest.data.user.GroupProgress
 
 class QuestService(
     private val plugin: JavaPlugin,
@@ -23,12 +24,13 @@ class QuestService(
     private val questRepo: QuestModelRepository
 ) {
     private val branchRuntime = BranchRuntimeManager(plugin, this)
-    private data class CachedUser(val data: net.nemoria.quest.data.user.UserData, var dirty: Boolean, var lastAccess: Long)
+    private data class CachedUser(val data: net.nemoria.quest.data.user.UserData, var dirty: Boolean, var lastAccess: Long, var version: Long = 0)
     private val userCache: MutableMap<UUID, CachedUser> = ConcurrentHashMap()
     private val questTimeLimitTasks: MutableMap<UUID, MutableMap<String, BukkitTask>> = ConcurrentHashMap()
     private var flushTask: BukkitTask? = null
     private val cacheTtlMs = 5 * 60 * 1000L
     private val flushIntervalTicks = 20L
+    private val questVarsCache: MutableMap<String, Map<String, String>> = ConcurrentHashMap()
 
     init {
         startFlushTask()
@@ -55,7 +57,9 @@ class QuestService(
     }
 
     private fun markDirty(player: OfflinePlayer) {
-        cached(player.uniqueId).dirty = true
+        val cu = cached(player.uniqueId)
+        cu.dirty = true
+        cu.version += 1
     }
 
     private fun startFlushTask() {
@@ -70,15 +74,20 @@ class QuestService(
         questTimeLimitTasks.values.forEach { inner -> inner.values.forEach { it.cancel() } }
         questTimeLimitTasks.clear()
         userCache.clear()
+        questVarsCache.clear()
     }
 
     private fun flushDirty(forceAll: Boolean = false) {
         val now = System.currentTimeMillis()
         userCache.forEach { (_, cached) ->
+            val versionSnapshot = cached.version
             if (forceAll || cached.dirty) {
-                userRepo.save(cached.data)
-                cached.dirty = false
-                cached.lastAccess = now
+                val snapshot = copiedUser(cached.data)
+                userRepo.save(snapshot)
+                if (cached.version == versionSnapshot) {
+                    cached.dirty = false
+                    cached.lastAccess = now
+                }
             }
         }
         userCache.keys.forEach { uuid ->
@@ -289,6 +298,32 @@ class QuestService(
     fun resumeQuestTimeLimit(player: OfflinePlayer, model: QuestModel) {
         if (model.timeLimit == null || model.branches.isNotEmpty()) return
         scheduleQuestTimeLimit(player, model)
+    }
+
+    private fun copiedUser(src: net.nemoria.quest.data.user.UserData): net.nemoria.quest.data.user.UserData {
+        val progressCopy = src.progress.mapValues { (_, qp) -> copyQuestProgress(qp) }.toMutableMap()
+        return net.nemoria.quest.data.user.UserData(
+            uuid = src.uuid,
+            activeQuests = src.activeQuests.toMutableSet(),
+            completedQuests = src.completedQuests.toMutableSet(),
+            progress = progressCopy,
+            userVariables = src.userVariables.toMutableMap()
+        )
+    }
+
+    private fun copyQuestProgress(src: QuestProgress): QuestProgress {
+        val objectivesCopy = src.objectives.mapValues { (_, st) -> ObjectiveState(st.completed, st.startedAt, st.completedAt, st.progress) }.toMutableMap()
+        return QuestProgress(
+            objectives = objectivesCopy,
+            variables = src.variables.toMutableMap(),
+            currentBranchId = src.currentBranchId,
+            currentNodeId = src.currentNodeId,
+            timeLimitStartedAt = src.timeLimitStartedAt,
+            randomHistory = src.randomHistory.toMutableSet(),
+            groupState = src.groupState.mapValues { (_, gs) -> GroupProgress(gs.completed.toMutableSet(), gs.remaining.toMutableList(), gs.required, gs.ordered) }.toMutableMap(),
+            divergeCounts = src.divergeCounts.toMutableMap(),
+            nodeProgress = src.nodeProgress.toMutableMap()
+        )
     }
 
     fun resumeTimers(player: Player, model: QuestModel) {
@@ -515,6 +550,7 @@ class QuestService(
     }
 
     internal fun runtime(): net.nemoria.quest.runtime.BranchRuntimeManager = branchRuntime
+    fun preloadParticleScripts() = branchRuntime.preloadParticleScripts()
 
     internal fun mutateProgress(player: OfflinePlayer, questId: String, mutate: (QuestProgress) -> Unit) {
         val data = data(player)
@@ -543,7 +579,7 @@ class QuestService(
         var out = raw
         val questVars = questId?.let { qid ->
             progress(player)[qid]?.variables
-                ?: questRepo.findById(qid)?.variables
+                ?: questVarsCache.computeIfAbsent(qid) { questInfo(it)?.variables ?: emptyMap() }
         } ?: emptyMap()
         out = out.replace("\\{mvariable:([A-Za-z0-9_]+)}".toRegex()) { m ->
             questVars[m.groupValues[1]] ?: "0"

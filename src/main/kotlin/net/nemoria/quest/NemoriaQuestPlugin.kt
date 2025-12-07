@@ -31,6 +31,7 @@ import net.nemoria.quest.hook.ChatHistoryPacketListener
 import net.nemoria.quest.runtime.PlayerBlockTracker
 import net.nemoria.quest.core.MessageFormatter
 import java.io.File
+import org.bukkit.ChatColor
 
 class NemoriaQuestPlugin : JavaPlugin() {
     lateinit var coreConfig: CoreConfig
@@ -76,6 +77,7 @@ class NemoriaQuestPlugin : JavaPlugin() {
         packetEvents?.let { PacketEvents.setAPI(it) }
 
         ContentBootstrap(this, Services.storage.questModelRepo).bootstrap()
+        Services.questService.preloadParticleScripts()
         loadGuiConfigs()
         logQuestLoadSummary("log.content.action_loaded")
         server.pluginManager.registerEvents(net.nemoria.quest.gui.GuiListener(), this)
@@ -97,6 +99,7 @@ class NemoriaQuestPlugin : JavaPlugin() {
     }
 
     override fun onDisable() {
+        server.scheduler.cancelTasks(this)
         if (::coreConfig.isInitialized) {
             runCatching {
                 if (Services.hasQuestService()) {
@@ -124,6 +127,7 @@ class NemoriaQuestPlugin : JavaPlugin() {
                 Services.questService.shutdown()
             }
         }
+        server.scheduler.cancelTasks(this)
         runCatching { Services.storage.close() }
         initStorage(storageConfig)
         PlayerBlockTracker.init(Services.storage.playerBlockRepo)
@@ -137,6 +141,7 @@ class NemoriaQuestPlugin : JavaPlugin() {
             net.nemoria.quest.hook.PlaceholderHook().register()
         }
         ContentBootstrap(this, Services.storage.questModelRepo).bootstrap()
+        Services.questService.preloadParticleScripts()
         org.bukkit.event.HandlerList.unregisterAll(this)
         resumeActiveBranches()
         logQuestLoadSummary("log.content.action_reloaded")
@@ -187,9 +192,11 @@ class NemoriaQuestPlugin : JavaPlugin() {
                 Services.questService.preload(player)
                 val active = Services.questService.activeQuests(player)
                 if (active.isEmpty()) return@Runnable
+                val models = active.mapNotNull { Services.questService.questInfo(it) }
+                if (models.isEmpty()) return@Runnable
                 scheduler.runTask(this, Runnable {
-                    active.forEach { qid ->
-                        val model = Services.storage.questModelRepo.findById(qid) ?: return@forEach
+                    models.forEach { model ->
+                        val qid = model.id
                         Services.questService.resumeTimers(player, model)
                         if (model.branches.isNotEmpty()) {
                             Services.questService.resumeBranch(player, model)
@@ -231,7 +238,8 @@ class NemoriaQuestPlugin : JavaPlugin() {
                 "files" to filesCount.toString()
             )
         )
-        val msg = MessageFormatter.format(raw, allowCenter = false)
-        logger.info(msg)
+        val sanitized = raw.replace("<\\/?(primary|secondary|dark|success|error|info|admin)>".toRegex(), "")
+        val colored = MessageFormatter.format(sanitized, allowCenter = false)
+        server.consoleSender.sendMessage(colored)
     }
 }

@@ -42,7 +42,7 @@ class BranchRuntimeManager(
     private val pendingPrompts: MutableMap<String, ActionContinuation> = mutableMapOf()
     private val pendingSneaks: MutableMap<UUID, ActionContinuation> = mutableMapOf()
     private val pendingNavigations: MutableMap<UUID, ActionContinuation> = mutableMapOf()
-    private val particleScripts: MutableMap<String, ParticleScript> = mutableMapOf()
+    private val particleScripts: MutableMap<String, ParticleScript> = java.util.concurrent.ConcurrentHashMap()
     private val guiSessions: MutableMap<UUID, DivergeGuiSession> = mutableMapOf()
     private val gson = GsonComponentSerializer.gson()
     private val legacySerializer = LegacyComponentSerializer.legacySection()
@@ -303,29 +303,29 @@ class BranchRuntimeManager(
                     val endType = pick.removePrefix("QUEST_").uppercase()
                     questService.mutateProgress(player, model.id) { it.randomHistory.add(endType) }
                 }
-                handleGoto(player, model, branchId, pick, 0)
+                handleGoto(player, model, branchId, pick, 0, node.id)
             }
             QuestObjectNodeType.SERVER_ITEMS_CLEAR -> {
                 p.inventory.clear()
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_ITEMS_GIVE -> {
                 giveOrDropItems(p, node, drop = false)
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_ITEMS_DROP -> {
                 giveOrDropItems(p, node, drop = true)
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_ITEMS_MODIFY -> {
                 val modified = modifyItems(p, node)
                 DebugLog.log("Items modify count=$modified quest=${model.id} node=${node.id}")
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_ITEMS_TAKE -> {
                 val taken = takeItems(p, node)
                 DebugLog.log("Items take count=$taken quest=${model.id} node=${node.id}")
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_COMMANDS_PERFORM -> {
                 node.actions.forEach { cmd ->
@@ -333,13 +333,13 @@ class BranchRuntimeManager(
                     if (node.commandsAsPlayer) plugin.server.dispatchCommand(p, rendered)
                     else plugin.server.dispatchCommand(plugin.server.consoleSender, rendered)
                 }
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_LOGIC_VARIABLE -> {
                 val varName = node.variable ?: return
                 val value = applyValueFormula(model, player, varName, node.valueFormula)
                 questService.updateVariable(player, model.id, varName, value)
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_LOGIC_MONEY -> {
                 // TODO: integrate with economy; for now just run actions as commands
@@ -352,71 +352,71 @@ class BranchRuntimeManager(
                         plugin.server.dispatchCommand(plugin.server.consoleSender, it.replace("{player}", p.name))
                     }
                 }
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_ENTITIES_DAMAGE -> {
                 val processed = processEntities(player, model.id, node) { ent, dmg -> ent.damage(dmg, p) }
                 DebugLog.log("Entities damage processed=$processed quest=${model.id} node=${node.id}")
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_ENTITIES_KILL -> {
                 val processed = processEntities(player, model.id, node) { ent, _ -> ent.remove() }
                 DebugLog.log("Entities kill processed=$processed quest=${model.id} node=${node.id}")
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_ENTITIES_KILL_LINKED -> {
                 val processed = killLinked(player, model.id, node)
                 DebugLog.log("Entities kill linked processed=$processed quest=${model.id} node=${node.id}")
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_ENTITIES_SPAWN -> {
                 val spawned = spawnEntities(player, model.id, node)
                 DebugLog.log("Entities spawn spawned=$spawned quest=${model.id} node=${node.id}")
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_ENTITIES_TELEPORT -> {
                 val processed = teleportEntities(player, model.id, node)
                 DebugLog.log("Entities teleport processed=$processed quest=${model.id} node=${node.id}")
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_BLOCKS_PLACE -> {
                 placeBlocks(p, node)
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_EXPLOSIONS_CREATE -> {
                 createExplosions(p, node)
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_FIREWORKS_LAUNCH -> {
                 launchFireworks(p, node)
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_LIGHTNING_STRIKE -> {
                 lightningStrikes(p, node)
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_PLAYER_DAMAGE -> {
                 val dmg = node.damage ?: 0.0
                 if (dmg > 0) p.damage(dmg)
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_PLAYER_EFFECTS_GIVE -> {
                 giveEffects(p, node)
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_PLAYER_EFFECTS_REMOVE -> {
                 removeEffects(p, node)
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_PLAYER_TELEPORT -> {
                 val target = resolvePosition(p, node.teleportPosition ?: node.position)
                 p.teleport(target)
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_LOGIC_POINTS -> {
                 val value = evalFormula(node.valueFormula, current = resolvePoints(player, node.pointsCategory))
                 updatePoints(player, node.pointsCategory, value)
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_LOGIC_MODEL_VARIABLE -> {
                 val varName = node.variable ?: return
@@ -444,11 +444,11 @@ class BranchRuntimeManager(
             }
             QuestObjectNodeType.SERVER_ACHIEVEMENT_AWARD -> {
                 awardAchievement(p, node)
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_CAMERA_MODE_TOGGLE -> {
                 toggleCameraMode(p, node)
-                node.goto?.let { handleGoto(player, model, branchId, it, 0) }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.DIVERGE_GUI -> {
                 openDivergeGui(p, model, branchId, node)
@@ -458,11 +458,11 @@ class BranchRuntimeManager(
             }
             QuestObjectNodeType.LOGIC_SWITCH -> {
                 val next = evaluateLogicSwitch(player, model, node) ?: node.goto ?: node.gotos.firstOrNull()
-                if (next != null) handleGoto(player, model, branchId, next, 0)
+                if (next != null) handleGoto(player, model, branchId, next, 0, node.id)
             }
             QuestObjectNodeType.CONDITIONS_SWITCH -> {
                 val next = evalCases(player, model, node) ?: node.goto ?: node.gotos.firstOrNull()
-                if (next != null) handleGoto(player, model, branchId, next, 0)
+                if (next != null) handleGoto(player, model, branchId, next, 0, node.id)
             }
             QuestObjectNodeType.NPC_INTERACT -> {
                 sessions[player.uniqueId]?.nodeId = node.id
@@ -747,16 +747,11 @@ class BranchRuntimeManager(
         val required = (node.groupRequired ?: children.size).coerceAtLeast(1)
         val progress = questService.progress(player)[model.id]
         val existing = progress?.groupState?.get(node.id)
-        val gp = if (existing != null) {
-            existing
-        } else {
-            GroupProgress(completed = mutableSetOf(), remaining = children.toMutableList(), required = required, ordered = node.groupOrdered)
-        }
+        val gp = existing ?: GroupProgress(completed = mutableSetOf(), remaining = children.toMutableList(), required = required, ordered = node.groupOrdered)
         questService.mutateProgress(player, model.id) { it.groupState[node.id] = gp }
         val remaining = gp.remaining.ifEmpty { children.toMutableList() }
         val next = if (gp.ordered) remaining.first() else remaining.random()
-        gp.remaining.remove(next)
-        questService.mutateProgress(player, model.id) { it.groupState[node.id] = gp }
+        net.nemoria.quest.core.DebugLog.log("GROUP start quest=${model.id} parent=${node.id} ordered=${gp.ordered} required=${gp.required} completed=${gp.completed} remaining=${gp.remaining}")
         runNode(player, model, branchId, next, 0)
     }
 
@@ -836,6 +831,16 @@ class BranchRuntimeManager(
             interval = cfg.getLong("interval", 5L),
             duration = cfg.getLong("duration", 40L)
         )
+    }
+
+    fun preloadParticleScripts() {
+        val dir = File(plugin.dataFolder, "content/particle_scripts")
+        if (!dir.exists() || !dir.isDirectory) return
+        dir.listFiles { f -> f.isFile && (f.extension.equals("yml", true) || f.extension.equals("yaml", true)) }
+            ?.forEach { file ->
+                val id = file.nameWithoutExtension
+                loadParticleScript(id)?.let { particleScripts[id] = it }
+            }
     }
 
     private fun scheduleCitizensNavigation(player: org.bukkit.entity.Player, payload: String): Boolean {
@@ -934,8 +939,9 @@ class BranchRuntimeManager(
     private fun handleGoto(player: OfflinePlayer, model: QuestModel, branchId: String, goto: String, delay: Long, currentNodeId: String? = null) {
         var target = normalizeTarget(goto)
         val questId = model.id
+        val session = sessions[player.uniqueId]
         // diverge objects mapping
-        sessions[player.uniqueId]?.let { sess ->
+        session?.let { sess ->
             if (currentNodeId != null && sess.divergeObjectMap.containsKey(currentNodeId)) {
                 val choice = sess.divergeObjectMap.remove(currentNodeId)
                 if (choice != null) {
@@ -953,20 +959,24 @@ class BranchRuntimeManager(
             }
         }
         // group progress
-        if (currentNodeId != null) {
-            val gpEntry = findGroupForChild(player, questId, currentNodeId)
+        val childId = currentNodeId ?: session?.nodeId
+        if (childId != null) {
+            val gpEntry = findGroupForChild(player, questId, childId)
             if (gpEntry != null) {
                 val (parentId, gp) = gpEntry
-                gp.completed.add(currentNodeId)
-                gp.remaining.remove(currentNodeId)
+                net.nemoria.quest.core.DebugLog.log("GROUP progress quest=$questId parent=$parentId child=$childId completed=${gp.completed} remaining=${gp.remaining} required=${gp.required} ordered=${gp.ordered}")
+                gp.completed.add(childId)
+                gp.remaining.remove(childId)
                 val required = gp.required.coerceAtLeast(1)
                 val remaining = gp.remaining.toList()
                 if (gp.completed.size >= required || remaining.isEmpty()) {
                     questService.mutateProgress(player, questId) { it.groupState.remove(parentId) }
+                    net.nemoria.quest.core.DebugLog.log("GROUP complete quest=$questId parent=$parentId goto=${model.branches[branchId]?.objects?.get(parentId)?.goto}")
                     target = model.branches[branchId]?.objects?.get(parentId)?.goto?.let { normalizeTarget(it) } ?: target
                 } else {
                     val next = if (gp.ordered) remaining.first() else remaining.random()
                     questService.mutateProgress(player, questId) { it.groupState[parentId] = gp }
+                    net.nemoria.quest.core.DebugLog.log("GROUP next quest=$questId parent=$parentId -> $next completed=${gp.completed} remaining=${gp.remaining}")
                     target = normalizeTarget(next)
                 }
             }
@@ -1783,6 +1793,24 @@ class BranchRuntimeManager(
         }
 
         val matchedItem = item
+        val delta = when {
+            matchedItem != null && kind in setOf(
+                ItemEventType.PICKUP,
+                ItemEventType.ACQUIRE,
+                ItemEventType.DROP,
+                ItemEventType.CONTAINER_TAKE,
+                ItemEventType.CONTAINER_PUT,
+                ItemEventType.TRADE,
+                ItemEventType.CRAFT,
+                ItemEventType.REPAIR,
+                ItemEventType.ENCHANT,
+                ItemEventType.BREW,
+                ItemEventType.MELT,
+                ItemEventType.THROW,
+                ItemEventType.INTERACT
+            ) -> matchedItem.amount.toDouble().coerceAtLeast(1.0)
+            else -> 1.0
+        }
         var progressed = false
         goals.forEach { goal ->
             val matchOk = when {
@@ -1805,7 +1833,7 @@ class BranchRuntimeManager(
                 else -> {
                     val progMap = session.itemProgress.getOrPut(node.id) { mutableMapOf() }
                     val cur = progMap.getOrDefault(goal.id, 0.0)
-                    progMap[goal.id] = cur + 1.0
+                    progMap[goal.id] = cur + delta
                     questService.saveNodeProgress(player, model.id, session.branchId, node.id, progMap[goal.id]!!, goal.id)
                     progressed = true
                     if ((kind == ItemEventType.BREW || kind == ItemEventType.MELT) && DebugLog.enabled) {
@@ -1830,9 +1858,7 @@ class BranchRuntimeManager(
         val allDone = goals.all { g -> (progMap[g.id] ?: 0.0) >= g.goal }
         if (allDone) {
             questService.clearNodeProgress(player, model.id, session.branchId, node.id)
-            val gotoRaw = node.goto ?: return
-            val target = normalizeTarget(gotoRaw)
-            runNode(player, model, session.branchId, target, 0)
+            node.goto?.let { handleGoto(player, model, session.branchId, it, 0, node.id) }
         }
     }
 

@@ -23,6 +23,7 @@ class ScoreboardManager {
     private val inFlight: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
     private val cacheTtlMs = 1000L
     private val rendering: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
+    private val rendered: MutableMap<UUID, RenderState> = ConcurrentHashMap()
 
     private data class Snapshot(
         val questId: String?,
@@ -32,6 +33,8 @@ class ScoreboardManager {
         val version: String,
         val timestamp: Long
     )
+
+    private data class RenderState(val signature: String)
 
     fun start() {
         stop()
@@ -50,6 +53,7 @@ class ScoreboardManager {
         cache.clear()
         inFlight.clear()
         rendering.clear()
+        rendered.clear()
         Bukkit.getOnlinePlayers().forEach { clear(it) }
     }
 
@@ -84,8 +88,9 @@ class ScoreboardManager {
         val cfg = Services.scoreboardConfig
         val version = Services.plugin.description.version
         val titleTemplate = if (cfg.title.contains("{version}")) cfg.title else (cfg.title + " <secondary>v{version}")
+        var title: String
         if (showQuest && questId != null && detailRaw != null && questNamePlain != null) {
-            val title = formatAndLimit(titleTemplate, cfg.maxTitleLength, mapOf("version" to version))
+            title = formatAndLimit(titleTemplate, cfg.maxTitleLength, mapOf("version" to version))
             objective.displayName(legacy.deserialize(title))
             val placeholders = mapOf(
                 "quest_name" to questNamePlain,
@@ -96,7 +101,7 @@ class ScoreboardManager {
                 lines.add(formatAndLimit(line, cfg.maxLineLength, placeholders))
             }
         } else {
-            val title = formatAndLimit(titleTemplate, cfg.maxTitleLength, mapOf("version" to version))
+            title = formatAndLimit(titleTemplate, cfg.maxTitleLength, mapOf("version" to version))
             objective.displayName(legacy.deserialize(title))
             val placeholders = mapOf(
                 "scoreboard_empty" to Services.i18n.msg("scoreboard.empty"),
@@ -106,6 +111,12 @@ class ScoreboardManager {
                 lines.add(formatAndLimit(line, cfg.maxLineLength, placeholders))
             }
         }
+        val signature = buildString {
+            append(title)
+            append("|")
+            lines.joinTo(this, separator = "\u0001")
+        }
+        rendered[player.uniqueId]?.let { if (it.signature == signature) return }
         // render lines
         var score = lines.size
         sb.entries.toList().forEach { sb.resetScores(it) }
@@ -120,6 +131,7 @@ class ScoreboardManager {
             objective.getScore(entry).score = score--
         }
         player.scoreboard = sb
+        rendered[player.uniqueId] = RenderState(signature)
     }
 
     private fun formatAndLimit(raw: String, limit: Int, placeholders: Map<String, String>): String {
