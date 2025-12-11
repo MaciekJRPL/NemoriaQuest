@@ -2,6 +2,13 @@
 backend: SQLITE
 sqlite:
   file: "plugins/NemoriaQuest/nemoriaquest.db"
+mysql:
+  host: "localhost"
+  port: 3306
+  database: "nemoriaquest"
+  user: "root"
+  password: ""
+  useSSL: false
 pool:
   maximumPoolSize: 5
   minimumIdle: 1

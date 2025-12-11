@@ -168,7 +168,7 @@ class NemoriaQuestPlugin : JavaPlugin() {
 
     private fun initStorage(storageConfig: net.nemoria.quest.config.StorageConfig) {
         val dataSource = DataSourceProvider.create(storageConfig)
-        Services.storage = StorageManager(dataSource)
+        Services.storage = StorageManager(storageConfig.backend, dataSource)
         Services.questService = QuestService(this, Services.storage.userRepo, Services.storage.questModelRepo)
     }
 
