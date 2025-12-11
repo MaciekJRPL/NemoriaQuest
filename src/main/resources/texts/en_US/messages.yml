@@ -11,7 +11,10 @@ command:
     limit_reached: "<prefix><error>Quest <primary>{quest} cannot be started (completion limit)."
     requirements: "<prefix><error>Requirements not met for quest <primary>{quest}."
     conditions: "<prefix><error>Start conditions not met for quest <primary>{quest}."
+    world_restriction: "<prefix><error>You can't start quest <primary>{quest}</primary> in this world."
+    cooldown: "<prefix><error>Quest <primary>{quest}</primary> is on cooldown for <primary>{time}</primary> more seconds."
     permission: "<prefix><error>You lack permission to start quest <primary>{quest}."
+    invalid_branch: "<prefix><error>Quest <primary>{quest}</primary> has no start node (invalid branch configuration)."
   stop:
     usage: "<prefix><secondary>Usage: <primary>/nq stop <questId>"
     stopped: "<prefix><success>Stopped quest <primary>{quest}."

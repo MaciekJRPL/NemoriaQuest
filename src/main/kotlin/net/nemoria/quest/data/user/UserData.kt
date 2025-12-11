@@ -7,7 +7,8 @@ data class UserData(
     val activeQuests: MutableSet<String> = mutableSetOf(),
     val completedQuests: MutableSet<String> = mutableSetOf(),
     val progress: MutableMap<String, QuestProgress> = mutableMapOf(),
-    val userVariables: MutableMap<String, String> = mutableMapOf()
+    val userVariables: MutableMap<String, String> = mutableMapOf(),
+    val cooldowns: MutableMap<String, QuestCooldown> = mutableMapOf()
 )
 
 data class QuestProgress(
@@ -20,6 +21,11 @@ data class QuestProgress(
     val groupState: MutableMap<String, GroupProgress> = mutableMapOf(),
     val divergeCounts: MutableMap<String, Int> = mutableMapOf(),
     val nodeProgress: MutableMap<String, Double> = mutableMapOf() // key: branchId:nodeId -> progress value
+)
+
+data class QuestCooldown(
+    val lastEndType: String? = null,
+    val lastAt: Long? = null
 )
 
 data class ObjectiveState(

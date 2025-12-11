@@ -4,10 +4,18 @@ data class QuestModel(
     val id: String,
     val name: String = id,
     val description: String? = null,
+    val descriptionPlaceholder: String? = null,
+    val informationMessage: String? = null,
     val displayName: String? = null,
     val descriptionLines: List<String> = emptyList(),
     val progressNotify: ProgressNotify? = null,
+    val displayPriority: Int? = null,
+    val defaultStatusItem: StatusItemTemplate? = null,
     val statusItems: Map<QuestStatusItemState, StatusItemTemplate> = emptyMap(),
+    val permissionStartRestriction: String? = null,
+    val permissionStartCommandRestriction: String? = null,
+    val worldRestriction: WorldRestriction? = null,
+    val commandRestriction: CommandRestriction? = null,
     val requirements: List<String> = emptyList(),
     val objectives: List<QuestObjective> = emptyList(),
     val rewards: QuestRewards = QuestRewards(),
@@ -18,6 +26,7 @@ data class QuestModel(
     val completion: CompletionSettings = CompletionSettings(),
     val activators: List<String> = emptyList(),
     val timeLimit: TimeLimit? = null,
+    val cooldown: CooldownSettings? = null,
     val variables: MutableMap<String, String> = mutableMapOf(),
     val branches: Map<String, Branch> = emptyMap(),
     val mainBranch: String? = null,
@@ -75,7 +84,14 @@ data class QuestRewards(
 
 data class TimeLimit(
     val durationSeconds: Long,
-    val failGoto: String? = null
+    val failGoto: String? = null,
+    val reminder: NotifySettings? = null,
+    val reminderIntervalSeconds: Long? = null
+)
+
+data class CooldownSettings(
+    val durationSeconds: Long,
+    val endTypes: List<String> = listOf("SUCCESS")
 )
 
 data class Branch(
@@ -390,6 +406,16 @@ data class ItemGoal(
     val take: Boolean = false
 )
 
+data class WorldRestriction(
+    val whitelist: List<String> = emptyList(),
+    val blacklist: List<String> = emptyList()
+)
+
+data class CommandRestriction(
+    val whitelist: List<String> = emptyList(),
+    val blacklist: List<String> = emptyList()
+)
+
 enum class SavingMode { ENABLED, DISABLED }
 
 data class Concurrency(
@@ -423,5 +449,6 @@ data class ConditionEntry(
 enum class ConditionType { PERMISSION, ITEMS, VARIABLE }
 
 data class CompletionSettings(
-    val maxCompletions: Int = 1
+    val maxCompletions: Int = 1,
+    val notify: Map<String, NotifySettings> = emptyMap()
 )

@@ -17,13 +17,36 @@ object QuestContentLoader {
         val id = cfg.getString("id")?.takeIf { it.isNotBlank() } ?: file.nameWithoutExtension
         val name = cfg.getString("name") ?: id
         val description = cfg.getString("description")
+        val descriptionPlaceholder = cfg.getString("description_placeholder")
+        val informationMessage = cfg.getString("information_message")
         val displayName = cfg.getString("display_name")
         val descriptionLines = cfg.getStringList("description_lines")
+        val displayPriority = if (cfg.contains("display_priority")) cfg.getInt("display_priority") else null
+        val permissionStartRestriction = cfg.getString("permission_start_restriction")
+        val permissionStartCommandRestriction = cfg.getString("permission_start_command_restriction")
+        val worldRestriction = cfg.getConfigurationSection("world_restriction")?.let { sec ->
+            val whitelist = sec.getString("whitelist")?.lines()?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
+            val blacklist = sec.getString("blacklist")?.lines()?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
+            WorldRestriction(whitelist, blacklist)
+        }
+        val commandRestriction = cfg.getConfigurationSection("command_restriction")?.let { sec ->
+            val whitelist = sec.getString("whitelist")?.lines()?.map { it.trimStart('/') }?.filter { it.isNotBlank() } ?: emptyList()
+            val blacklist = sec.getString("blacklist")?.lines()?.map { it.trimStart('/') }?.filter { it.isNotBlank() } ?: emptyList()
+            CommandRestriction(whitelist, blacklist)
+        }
         val saving = cfg.getString("saving")?.let { runCatching { SavingMode.valueOf(it.uppercase()) }.getOrDefault(SavingMode.ENABLED) } ?: SavingMode.ENABLED
         val timeLimit = cfg.getConfigurationSection("time_limit")?.let { sec ->
             val dur = parseDurationSeconds(sec.getString("duration")) ?: return@let null
             val failGoto = sec.getString("fail_goto")
-            TimeLimit(durationSeconds = dur, failGoto = failGoto)
+            val reminderSec = sec.getConfigurationSection("reminder")
+            val reminder = parseNotify(reminderSec)
+            val reminderInterval = reminderSec?.getString("interval")?.let { parseDurationSeconds(it) }
+            TimeLimit(durationSeconds = dur, failGoto = failGoto, reminder = reminder, reminderIntervalSeconds = reminderInterval)
+        }
+        val cooldown = cfg.getConfigurationSection("cooldown")?.let { csec ->
+            val dur = parseDurationSeconds(csec.getString("duration")) ?: return@let null
+            val endTypes = csec.getStringList("end_types").takeIf { it.isNotEmpty() } ?: listOf("SUCCESS")
+            CooldownSettings(durationSeconds = dur, endTypes = endTypes.map { it.uppercase() })
         }
         val variables = cfg.getConfigurationSection("model_variables")?.getKeys(false)?.associateWith { key ->
             cfg.getConfigurationSection("model_variables")!!.getString(key, "") ?: ""
@@ -49,8 +72,12 @@ object QuestContentLoader {
             val conds = parseConditionContainer(sec.get("conditions"), sec.getConfigurationSection("conditions"))
             StartConditions(match, noMatch, conds)
         }
-        val completion = cfg.getConfigurationSection("completion")?.let {
-            CompletionSettings(maxCompletions = it.getInt("max_completions", 1))
+        val completion = cfg.getConfigurationSection("completion")?.let { compSec ->
+            val maxComp = compSec.getInt("max_completions", 1)
+            val notify = compSec.getConfigurationSection("notify")?.getKeys(false)?.associateWith { key ->
+                parseNotify(compSec.getConfigurationSection("notify.$key"))
+            }?.filterValues { it != null }?.mapValues { it.value!! } ?: emptyMap()
+            CompletionSettings(maxCompletions = maxComp, notify = notify)
         } ?: CompletionSettings()
         val activators = cfg.getStringList("activators")
         val progressNotify = cfg.getConfigurationSection("progress_notify")?.let {
@@ -69,6 +96,13 @@ object QuestContentLoader {
             val cmd = if (section.contains("custom_model_data")) section.getInt("custom_model_data") else null
             state to StatusItemTemplate(type = type, name = nameItem, lore = lore, customModelData = cmd)
         }?.toMap() ?: emptyMap()
+        val defaultStatusItem = cfg.getConfigurationSection("all_status_item")?.let { section ->
+            val type = section.getString("type") ?: return@let null
+            val nameItem = section.getString("name")
+            val lore = section.getStringList("lore")
+            val cmd = if (section.contains("custom_model_data")) section.getInt("custom_model_data") else null
+            StatusItemTemplate(type = type, name = nameItem, lore = lore, customModelData = cmd)
+        }
         val requirements = cfg.getStringList("requirements")
         val objectives = cfg.getList("objectives")?.mapIndexedNotNull { index, any ->
             when (any) {
@@ -122,6 +156,8 @@ object QuestContentLoader {
             id = id,
             name = name,
             description = description,
+            descriptionPlaceholder = descriptionPlaceholder,
+            informationMessage = informationMessage,
             displayName = displayName,
             descriptionLines = descriptionLines,
             timeLimit = timeLimit,
@@ -134,12 +170,19 @@ object QuestContentLoader {
             activators = activators,
             progressNotify = progressNotify,
             statusItems = statusItems,
+            defaultStatusItem = defaultStatusItem,
             requirements = requirements,
             objectives = objectives,
             rewards = rewards,
             branches = branches,
             mainBranch = mainBranch,
-            endObjects = endObjects
+            endObjects = endObjects,
+            displayPriority = displayPriority,
+            permissionStartRestriction = permissionStartRestriction,
+            permissionStartCommandRestriction = permissionStartCommandRestriction,
+            worldRestriction = worldRestriction,
+            commandRestriction = commandRestriction,
+            cooldown = cooldown
         )
     }
 
@@ -155,6 +198,20 @@ object QuestContentLoader {
             else -> num
         }
         return seconds
+    }
+
+    private fun parseNotify(sec: org.bukkit.configuration.ConfigurationSection?): NotifySettings? {
+        if (sec == null) return null
+        val rawMsg = sec.get("message")
+        val messages = when (rawMsg) {
+            is String -> listOf(rawMsg)
+            is List<*> -> sec.getStringList("message")
+            else -> emptyList()
+        }
+        return NotifySettings(
+            message = messages,
+            sound = sec.getString("sound")
+        )
     }
 
     private fun parseObjectNode(id: String, sec: org.bukkit.configuration.ConfigurationSection?): QuestObjectNode? {

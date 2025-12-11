@@ -45,6 +45,9 @@ class PlayerMiscListener : Listener {
         val player = event.player
         val msg = event.message.removePrefix("/").trim()
         event.isCancelled = true
+        if (!Services.questService.isCommandAllowed(player, msg)) {
+            return
+        }
         Services.plugin.server.scheduler.runTask(Services.plugin, Runnable {
             val cancel = Services.questService.handlePlayerMiscEvent(
                 player,

@@ -105,6 +105,14 @@ object PlayerBlockTracker {
         plugin.server.scheduler.runTaskAsynchronously(plugin, Runnable { block() })
     }
 
+    fun shutdown() {
+        pruneTask?.cancel()
+        pruneTask = null
+        placed.clear()
+        placedOwner.clear()
+        placedAt.clear()
+    }
+
     private fun ensureLoaded(block: Block) {
         val k = key(block.location)
         if (placed.contains(k) || placedAt.containsKey(k)) return

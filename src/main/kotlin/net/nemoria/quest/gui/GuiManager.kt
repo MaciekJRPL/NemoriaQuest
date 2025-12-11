@@ -86,8 +86,8 @@ class GuiManager {
     }
 
     private fun questItem(player: Player, model: QuestModel, status: QuestStatusItemState, progress: QuestProgress?): ItemStack {
-        val statusTemplate = model.statusItems[status]
-            val placeholders = buildPlaceholders(player, model, progress)
+        val statusTemplate = model.statusItems[status] ?: model.defaultStatusItem
+        val placeholders = buildPlaceholders(player, model, status, progress)
         val type = statusTemplate?.type?.let { runCatching { Material.valueOf(it.uppercase()) }.getOrNull() } ?: Material.PAPER
         val item = ItemStack(type)
         val meta = item.itemMeta ?: return item
@@ -152,13 +152,36 @@ class GuiManager {
             QuestStatusItemState.COMPLETED -> 3
         }
 
-        private fun buildPlaceholders(player: Player, model: QuestModel, progress: net.nemoria.quest.data.user.QuestProgress?): Map<String, String> {
+        private fun buildPlaceholders(player: Player, model: QuestModel, status: QuestStatusItemState, progress: net.nemoria.quest.data.user.QuestProgress?): Map<String, String> {
             val objectiveDetail = currentObjectiveDetail(player, model, progress)
+            val controls = when (status) {
+                QuestStatusItemState.AVAILABLE -> Services.i18n.msg("gui.controls.start", mapOf("quest" to model.name))
+                QuestStatusItemState.PROGRESS -> Services.i18n.msg("gui.controls.stop", mapOf("quest" to model.name))
+                QuestStatusItemState.COMPLETED -> Services.i18n.msg("gui.controls.completed", mapOf("quest" to model.name))
+                else -> ""
+            }
+            val completions = when {
+                status == QuestStatusItemState.COMPLETED -> Services.i18n.msg("gui.status.completed")
+                progress != null && progress.objectives.values.any { it.completed } -> Services.i18n.msg("gui.status.in_progress")
+                else -> ""
+            }
+            val errors = if (status == QuestStatusItemState.UNAVAILABLE) Services.i18n.msg("gui.status.unavailable") else ""
+            val lastCompletionTs = progress?.objectives?.values?.maxOfOrNull { it.completedAt ?: 0L } ?: 0L
+            val lastCompletion = if (lastCompletionTs > 0L) {
+                Services.i18n.msg("gui.status.last_completion", mapOf("ts" to lastCompletionTs.toString()))
+            } else ""
             return mapOf(
                 "name" to (model.displayName ?: model.name),
+                "quest" to (model.displayName ?: model.name),
                 "id" to model.id,
-                "detailed_progression" to "",
-                "objective_detail" to (objectiveDetail ?: "")
+                "description" to (model.description ?: ""),
+                "objective_detail" to (objectiveDetail ?: ""),
+                "detailed_progression" to (objectiveDetail ?: ""),
+                "controls" to controls,
+                "completions" to completions,
+                "last_completion" to lastCompletion,
+                "cooldown" to "",
+                "detailed_errors" to errors
             )
         }
 

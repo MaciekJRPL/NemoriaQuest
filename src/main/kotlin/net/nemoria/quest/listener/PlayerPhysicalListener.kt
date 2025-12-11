@@ -18,6 +18,7 @@ import org.bukkit.event.player.PlayerInteractEntityEvent
 import org.bukkit.event.player.PlayerPortalEvent
 import org.bukkit.event.player.PlayerTeleportEvent
 import org.bukkit.event.player.PlayerToggleSneakEvent
+import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.event.entity.EntityCombustEvent
 import org.bukkit.event.entity.ProjectileLaunchEvent
 import org.bukkit.event.vehicle.VehicleEnterEvent
@@ -154,6 +155,15 @@ class PlayerPhysicalListener : Listener {
         if (event.isSneaking) {
             Services.questService.handlePlayerPhysicalEvent(event.player, PhysicalEventType.TOGGLE_SNEAK, 1.0, null)
         }
+    }
+
+    @EventHandler
+    fun onQuit(event: PlayerQuitEvent) {
+        val uuid = event.player.uniqueId
+        sneakStart.remove(uuid)
+        portalEnterMarks.remove(uuid)
+        vehicleEnterCooldown.remove(uuid)
+        sneakTrack.remove(uuid)?.task?.cancel()
     }
 
     @EventHandler(ignoreCancelled = true)

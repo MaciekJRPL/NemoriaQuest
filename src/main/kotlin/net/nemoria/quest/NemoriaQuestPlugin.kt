@@ -37,6 +37,7 @@ class NemoriaQuestPlugin : JavaPlugin() {
     lateinit var coreConfig: CoreConfig
         private set
     private var packetEvents: PacketEventsAPI<*>? = null
+    private var itemListener: PlayerItemListener? = null
 
     override fun onLoad() {
         if (server.pluginManager.getPlugin("PacketEvents") != null) {
@@ -85,7 +86,8 @@ class NemoriaQuestPlugin : JavaPlugin() {
         server.pluginManager.registerEvents(ChatHideBukkitListener(), this)
         server.pluginManager.registerEvents(PlayerBlockListener(), this)
         server.pluginManager.registerEvents(PlayerEntityListener(), this)
-        server.pluginManager.registerEvents(PlayerItemListener(), this)
+        itemListener = PlayerItemListener()
+        server.pluginManager.registerEvents(itemListener!!, this)
         server.pluginManager.registerEvents(PlayerMoveListener(), this)
         server.pluginManager.registerEvents(PlayerPhysicalListener(), this)
         server.pluginManager.registerEvents(PlayerMiscListener(), this)
@@ -106,6 +108,8 @@ class NemoriaQuestPlugin : JavaPlugin() {
                     Services.questService.shutdown()
                 }
             }
+            runCatching { PlayerBlockTracker.shutdown() }
+            runCatching { itemListener?.shutdown() }
             runCatching { Services.storage.close() }
         }
         Services.scoreboardManager.stop()
@@ -127,7 +131,9 @@ class NemoriaQuestPlugin : JavaPlugin() {
                 Services.questService.shutdown()
             }
         }
+        runCatching { itemListener?.shutdown() }
         server.scheduler.cancelTasks(this)
+        PlayerBlockTracker.shutdown()
         runCatching { Services.storage.close() }
         initStorage(storageConfig)
         PlayerBlockTracker.init(Services.storage.playerBlockRepo)
@@ -151,7 +157,8 @@ class NemoriaQuestPlugin : JavaPlugin() {
         server.pluginManager.registerEvents(ChatHideBukkitListener(), this)
         server.pluginManager.registerEvents(PlayerBlockListener(), this)
         server.pluginManager.registerEvents(PlayerEntityListener(), this)
-        server.pluginManager.registerEvents(PlayerItemListener(), this)
+        itemListener = PlayerItemListener()
+        server.pluginManager.registerEvents(itemListener!!, this)
         server.pluginManager.registerEvents(PlayerMoveListener(), this)
         server.pluginManager.registerEvents(PlayerPhysicalListener(), this)
         server.pluginManager.registerEvents(PlayerMiscListener(), this)

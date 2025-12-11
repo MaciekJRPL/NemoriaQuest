@@ -48,7 +48,8 @@ class StorageManager(private val dataSource: HikariDataSource) {
                     active TEXT NOT NULL,
                     completed TEXT NOT NULL,
                     progress TEXT NOT NULL,
-                    user_vars TEXT NOT NULL
+                    user_vars TEXT NOT NULL,
+                    cooldowns TEXT NOT NULL
                 )
                 """.trimIndent()
             )
@@ -56,6 +57,7 @@ class StorageManager(private val dataSource: HikariDataSource) {
         // Ensure legacy tables get new column
         addColumnIfMissing(conn, "user_data", "progress", "TEXT NOT NULL DEFAULT ''")
         addColumnIfMissing(conn, "user_data", "user_vars", "TEXT NOT NULL DEFAULT ''")
+        addColumnIfMissing(conn, "user_data", "cooldowns", "TEXT NOT NULL DEFAULT ''")
     }
 
     private fun createQuestModelTable(conn: Connection) {
@@ -83,7 +85,16 @@ class StorageManager(private val dataSource: HikariDataSource) {
                     players TEXT,
                     start_conditions TEXT,
                     completion TEXT,
-                    activators TEXT
+                    activators TEXT,
+                    description_placeholder TEXT,
+                    information_message TEXT,
+                    display_priority INTEGER,
+                    default_status_item TEXT,
+                    permission_start_restriction TEXT,
+                    permission_start_command_restriction TEXT,
+                    world_restriction TEXT,
+                    command_restriction TEXT,
+                    cooldown TEXT
                 )
                 """.trimIndent()
             )
@@ -107,6 +118,15 @@ class StorageManager(private val dataSource: HikariDataSource) {
         addColumnIfMissing(conn, "quest_model", "start_conditions", "TEXT")
         addColumnIfMissing(conn, "quest_model", "completion", "TEXT")
         addColumnIfMissing(conn, "quest_model", "activators", "TEXT")
+        addColumnIfMissing(conn, "quest_model", "description_placeholder", "TEXT")
+        addColumnIfMissing(conn, "quest_model", "information_message", "TEXT")
+        addColumnIfMissing(conn, "quest_model", "display_priority", "INTEGER")
+        addColumnIfMissing(conn, "quest_model", "default_status_item", "TEXT")
+        addColumnIfMissing(conn, "quest_model", "permission_start_restriction", "TEXT")
+        addColumnIfMissing(conn, "quest_model", "permission_start_command_restriction", "TEXT")
+        addColumnIfMissing(conn, "quest_model", "world_restriction", "TEXT")
+        addColumnIfMissing(conn, "quest_model", "command_restriction", "TEXT")
+        addColumnIfMissing(conn, "quest_model", "cooldown", "TEXT")
 
         conn.createStatement().use { st ->
             st.executeUpdate(

@@ -15,20 +15,43 @@ import org.bukkit.event.entity.EntityPickupItemEvent
 import org.bukkit.event.entity.ProjectileLaunchEvent
 import org.bukkit.NamespacedKey
 import io.papermc.paper.event.player.PlayerInventorySlotChangeEvent
+import org.bukkit.scheduler.BukkitTask
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 class PlayerItemListener : Listener {
-    private val runtime = Services.questService.runtime()
+    private val runtime by lazy { Services.questService.runtime() }
     private val pickupAcquireSkip: MutableMap<UUID, Int> = ConcurrentHashMap()
     private val brewerOwner: MutableMap<Location, Pair<UUID, Long>> = ConcurrentHashMap()
     private val brewerTtlMs = 2 * 60 * 1000L
-    private val countedPutKey = NamespacedKey(Services.plugin, "nq_counted_put")
-    private val countedTakeKey = NamespacedKey(Services.plugin, "nq_counted_take")
+    private var brewerPruneTask: BukkitTask? = null
+    private val countedPutKey by lazy { NamespacedKey(Services.plugin, "nq_counted_put") }
+    private val countedTakeKey by lazy { NamespacedKey(Services.plugin, "nq_counted_take") }
+
+    init {
+        Services.plugin?.let { startPruneTask() }
+    }
+
+    private fun startPruneTask() {
+        brewerPruneTask?.cancel()
+        brewerPruneTask = Services.plugin.server.scheduler.runTaskTimerAsynchronously(
+            Services.plugin,
+            Runnable { pruneBrewers() },
+            20L * 60,
+            20L * 60
+        )
+    }
 
     private fun pruneBrewers(now: Long = System.currentTimeMillis()) {
         val expired = brewerOwner.filterValues { now - it.second > brewerTtlMs }.keys
         expired.forEach { brewerOwner.remove(it) }
+    }
+
+    fun shutdown() {
+        brewerPruneTask?.cancel()
+        brewerPruneTask = null
+        brewerOwner.clear()
+        pickupAcquireSkip.clear()
     }
 
     private fun isCounted(stack: org.bukkit.inventory.ItemStack?, key: NamespacedKey): Boolean {

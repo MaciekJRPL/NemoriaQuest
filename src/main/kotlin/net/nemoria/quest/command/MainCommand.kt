@@ -58,7 +58,7 @@ class MainCommand(private val plugin: NemoriaQuestPlugin) : CommandExecutor, Tab
             sendMsg(sender, "command.player_only")
             return true
         }
-        val result = net.nemoria.quest.core.Services.questService.startQuest(player, args[1])
+        val result = net.nemoria.quest.core.Services.questService.startQuest(player, args[1], viaCommand = true)
         net.nemoria.quest.core.DebugLog.log("Command start result=$result quest=${args[1]} player=${player.name}")
         when (result) {
             net.nemoria.quest.quest.QuestService.StartResult.SUCCESS ->
@@ -73,10 +73,19 @@ class MainCommand(private val plugin: NemoriaQuestPlugin) : CommandExecutor, Tab
                 sendMsg(sender, "command.start.requirements", mapOf("quest" to args[1]))
             net.nemoria.quest.quest.QuestService.StartResult.CONDITION_FAIL ->
                 sendMsg(sender, "command.start.conditions", mapOf("quest" to args[1]))
+            net.nemoria.quest.quest.QuestService.StartResult.WORLD_RESTRICTED ->
+                sendMsg(sender, "command.start.world_restriction", mapOf("quest" to args[1]))
+            net.nemoria.quest.quest.QuestService.StartResult.COOLDOWN -> {
+                val remaining = net.nemoria.quest.core.Services.questService.cooldownRemainingSeconds(player, args[1])
+                val timeFmt = net.nemoria.quest.core.Services.questService.formatDuration(remaining)
+                sendMsg(sender, "command.start.cooldown", mapOf("quest" to args[1], "time" to timeFmt))
+            }
             net.nemoria.quest.quest.QuestService.StartResult.PERMISSION_FAIL ->
                 sendMsg(sender, "command.start.permission", mapOf("quest" to args[1]))
             net.nemoria.quest.quest.QuestService.StartResult.OFFLINE ->
                 sendMsg(sender, "command.player_only")
+            net.nemoria.quest.quest.QuestService.StartResult.INVALID_BRANCH ->
+                sendMsg(sender, "command.start.invalid_branch", mapOf("quest" to args[1]))
         }
         return true
     }

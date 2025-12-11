@@ -12,6 +12,7 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
     private val objectivesType = object : TypeToken<List<QuestObjective>>() {}.type
     private val descriptionLinesType = object : TypeToken<List<String>>() {}.type
     private val statusItemsType = object : TypeToken<Map<QuestStatusItemState, StatusItemTemplate>>() {}.type
+    private val statusItemType = object : TypeToken<StatusItemTemplate>() {}.type
     private val requirementsType = object : TypeToken<List<String>>() {}.type
     private val rewardsType = object : TypeToken<QuestRewards>() {}.type
     private val branchesType = object : TypeToken<Map<String, Branch>>() {}.type
@@ -27,7 +28,7 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
         cache[id]?.let { return it }
         dataSource.connection.use { conn ->
             conn.prepareStatement(
-                "SELECT name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators FROM quest_model WHERE id = ?"
+                "SELECT name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators, description_placeholder, information_message, display_priority, default_status_item, permission_start_restriction, permission_start_command_restriction, world_restriction, command_restriction, cooldown FROM quest_model WHERE id = ?"
             ).use { ps ->
                 ps.setString(1, id)
                 ps.executeQuery().use { rs ->
@@ -53,7 +54,16 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
                             variables = parseVariables(rs.getString("variables")),
                             branches = parseBranches(rs.getString("branches")),
                             mainBranch = rs.getString("main_branch"),
-                            endObjects = parseEndObjects(rs.getString("end_objects"))
+                            endObjects = parseEndObjects(rs.getString("end_objects")),
+                            descriptionPlaceholder = rs.getString("description_placeholder"),
+                            informationMessage = rs.getString("information_message"),
+                            displayPriority = rs.getInt("display_priority").let { if (rs.wasNull()) null else it },
+                            defaultStatusItem = parseStatusItem(rs.getString("default_status_item")),
+                            permissionStartRestriction = rs.getString("permission_start_restriction"),
+                            permissionStartCommandRestriction = rs.getString("permission_start_command_restriction"),
+                            worldRestriction = parseWorldRestriction(rs.getString("world_restriction")),
+                            commandRestriction = parseCommandRestriction(rs.getString("command_restriction")),
+                            cooldown = parseCooldown(rs.getString("cooldown"))
                         )
                         cache[id] = model
                         return model
@@ -69,7 +79,7 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
         val list = mutableListOf<QuestModel>()
         dataSource.connection.use { conn ->
             conn.prepareStatement(
-                "SELECT id, name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators FROM quest_model"
+                "SELECT id, name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators, description_placeholder, information_message, display_priority, default_status_item, permission_start_restriction, permission_start_command_restriction, world_restriction, command_restriction, cooldown FROM quest_model"
             ).use { ps ->
                 ps.executeQuery().use { rs ->
                     while (rs.next()) {
@@ -94,7 +104,16 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
                             variables = parseVariables(rs.getString("variables")),
                             branches = parseBranches(rs.getString("branches")),
                             mainBranch = rs.getString("main_branch"),
-                            endObjects = parseEndObjects(rs.getString("end_objects"))
+                            endObjects = parseEndObjects(rs.getString("end_objects")),
+                            descriptionPlaceholder = rs.getString("description_placeholder"),
+                            informationMessage = rs.getString("information_message"),
+                            displayPriority = rs.getInt("display_priority").let { if (rs.wasNull()) null else it },
+                            defaultStatusItem = parseStatusItem(rs.getString("default_status_item")),
+                            permissionStartRestriction = rs.getString("permission_start_restriction"),
+                            permissionStartCommandRestriction = rs.getString("permission_start_command_restriction"),
+                            worldRestriction = parseWorldRestriction(rs.getString("world_restriction")),
+                            commandRestriction = parseCommandRestriction(rs.getString("command_restriction")),
+                            cooldown = parseCooldown(rs.getString("cooldown"))
                         )
                         cache[model.id] = model
                         list.add(model)
@@ -109,9 +128,9 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
         dataSource.connection.use { conn ->
             conn.prepareStatement(
                 """
-                INSERT INTO quest_model(id, name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description, display_name = excluded.display_name, description_lines = excluded.description_lines, progress_notify = excluded.progress_notify, status_items = excluded.status_items, requirements = excluded.requirements, objectives = excluded.objectives, rewards = excluded.rewards, time_limit = excluded.time_limit, variables = excluded.variables, branches = excluded.branches, main_branch = excluded.main_branch, end_objects = excluded.end_objects, saving = excluded.saving, concurrency = excluded.concurrency, players = excluded.players, start_conditions = excluded.start_conditions, completion = excluded.completion, activators = excluded.activators
+                INSERT INTO quest_model(id, name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators, description_placeholder, information_message, display_priority, default_status_item, permission_start_restriction, permission_start_command_restriction, world_restriction, command_restriction, cooldown)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description, display_name = excluded.display_name, description_lines = excluded.description_lines, progress_notify = excluded.progress_notify, status_items = excluded.status_items, requirements = excluded.requirements, objectives = excluded.objectives, rewards = excluded.rewards, time_limit = excluded.time_limit, variables = excluded.variables, branches = excluded.branches, main_branch = excluded.main_branch, end_objects = excluded.end_objects, saving = excluded.saving, concurrency = excluded.concurrency, players = excluded.players, start_conditions = excluded.start_conditions, completion = excluded.completion, activators = excluded.activators, description_placeholder = excluded.description_placeholder, information_message = excluded.information_message, display_priority = excluded.display_priority, default_status_item = excluded.default_status_item, permission_start_restriction = excluded.permission_start_restriction, permission_start_command_restriction = excluded.permission_start_command_restriction, world_restriction = excluded.world_restriction, command_restriction = excluded.command_restriction, cooldown = excluded.cooldown
                 """.trimIndent()
             ).use { ps ->
                 ps.setString(1, model.id)
@@ -135,6 +154,15 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
                 ps.setString(19, gson.toJson(model.startConditions))
                 ps.setString(20, gson.toJson(model.completion))
                 ps.setString(21, gson.toJson(model.activators))
+                ps.setString(22, model.descriptionPlaceholder)
+                ps.setString(23, model.informationMessage)
+                if (model.displayPriority != null) ps.setInt(24, model.displayPriority) else ps.setNull(24, java.sql.Types.INTEGER)
+                ps.setString(25, gson.toJson(model.defaultStatusItem))
+                ps.setString(26, model.permissionStartRestriction)
+                ps.setString(27, model.permissionStartCommandRestriction)
+                ps.setString(28, gson.toJson(model.worldRestriction))
+                ps.setString(29, gson.toJson(model.commandRestriction))
+                ps.setString(30, gson.toJson(model.cooldown))
                 ps.executeUpdate()
             }
         }
@@ -159,6 +187,26 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
     private fun parseStatusItems(raw: String?): Map<QuestStatusItemState, StatusItemTemplate> {
         if (raw.isNullOrBlank()) return emptyMap()
         return runCatching { gson.fromJson<Map<QuestStatusItemState, StatusItemTemplate>>(raw, statusItemsType) }.getOrDefault(emptyMap())
+    }
+
+    private fun parseStatusItem(raw: String?): StatusItemTemplate? {
+        if (raw.isNullOrBlank()) return null
+        return runCatching { gson.fromJson<StatusItemTemplate>(raw, statusItemType) }.getOrNull()
+    }
+
+    private fun parseWorldRestriction(raw: String?): WorldRestriction? {
+        if (raw.isNullOrBlank()) return null
+        return runCatching { gson.fromJson(raw, WorldRestriction::class.java) }.getOrNull()
+    }
+
+    private fun parseCommandRestriction(raw: String?): CommandRestriction? {
+        if (raw.isNullOrBlank()) return null
+        return runCatching { gson.fromJson(raw, CommandRestriction::class.java) }.getOrNull()
+    }
+
+    private fun parseCooldown(raw: String?): CooldownSettings? {
+        if (raw.isNullOrBlank()) return null
+        return runCatching { gson.fromJson(raw, CooldownSettings::class.java) }.getOrNull()
     }
 
     private fun parseProgressNotify(raw: String?): ProgressNotify? {

@@ -10,8 +10,12 @@ command:
     already_active: "<prefix><secondary>Misja <primary>{quest} jest już aktywna."
     limit_reached: "<prefix><error>Nie można uruchomić misji <primary>{quest} (limit ukończeń)."
     requirements: "<prefix><error>Nie spełniasz wymagań misji <primary>{quest}."
+    conditions: "<prefix><error>Warunki startu misji <primary>{quest} nie są spełnione."
+    world_restriction: "<prefix><error>Nie możesz uruchomić misji <primary>{quest}</primary> w tym świecie."
+    cooldown: "<prefix><error>Misja <primary>{quest}</primary> jest na cooldownie przez jeszcze <primary>{time}</primary> sekund."
     permission: "<prefix><error>Brak uprawnień do uruchomienia misji <primary>{quest}."
   stop:
+        invalid_branch: "<prefix><error>Misja <primary>{quest}</primary> nie ma wezla startowego (bledna konfiguracja galezi)."
     usage: "<prefix><primary>Użycie: /nq stop <questId>"
     stopped: "<prefix><success>Zatrzymano misję <primary>{quest}."
   active:
@@ -59,9 +63,6 @@ help:
     - " <primary>/nq complete <id> <dark>- <secondary>Oznacz jako ukończoną"
     - " <primary>/nq reload <dark>- <secondary>Przeładuj konfigurację"
     - ""
-
-
-
 log:
   content:
     action_loaded: "Załadowano"

@@ -93,13 +93,14 @@ object ChatHideService {
     }
 
     fun clear() {
+        val ids = hidden.toList()
         hidden.clear()
         allowOnce.clear()
         allowExact.clear()
         allowJson.clear()
         dialogPlayers.clear()
         buffered.clear()
-        hidden.forEach { ChatMessageDeduplicator.clear(it) }
+        ids.forEach { ChatMessageDeduplicator.clear(it) }
     }
 
     fun beginDialog(playerId: UUID) {

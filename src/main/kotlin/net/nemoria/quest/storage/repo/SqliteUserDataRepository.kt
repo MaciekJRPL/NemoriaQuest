@@ -13,7 +13,7 @@ class SqliteUserDataRepository(private val dataSource: HikariDataSource) : UserD
 
     override fun load(uuid: UUID): UserData {
         dataSource.connection.use { conn ->
-            conn.prepareStatement("SELECT active, completed, progress, user_vars FROM user_data WHERE uuid = ?").use { ps ->
+            conn.prepareStatement("SELECT active, completed, progress, user_vars, cooldowns FROM user_data WHERE uuid = ?").use { ps ->
                 ps.setString(1, uuid.toString())
                 ps.executeQuery().use { rs ->
                     if (rs.next()) {
@@ -24,7 +24,8 @@ class SqliteUserDataRepository(private val dataSource: HikariDataSource) : UserD
                             activeQuests = rs.getString("active").toSetMutable(),
                             completedQuests = rs.getString("completed").toSetMutable(),
                             progress = parseProgress(progressRaw),
-                            userVariables = parseMap(userVarsRaw)
+                            userVariables = parseMap(userVarsRaw),
+                            cooldowns = parseCooldowns(rs.getString("cooldowns"))
                         )
                     }
                 }
@@ -40,9 +41,9 @@ class SqliteUserDataRepository(private val dataSource: HikariDataSource) : UserD
         dataSource.connection.use { conn ->
             conn.prepareStatement(
                 """
-                INSERT INTO user_data(uuid, active, completed, progress, user_vars)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(uuid) DO UPDATE SET active = excluded.active, completed = excluded.completed, progress = excluded.progress, user_vars = excluded.user_vars
+                INSERT INTO user_data(uuid, active, completed, progress, user_vars, cooldowns)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(uuid) DO UPDATE SET active = excluded.active, completed = excluded.completed, progress = excluded.progress, user_vars = excluded.user_vars, cooldowns = excluded.cooldowns
                 """.trimIndent()
             ).use { ps ->
                 ps.setString(1, data.uuid.toString())
@@ -50,6 +51,7 @@ class SqliteUserDataRepository(private val dataSource: HikariDataSource) : UserD
                 ps.setString(3, data.completedQuests.joinToString(";"))
                 ps.setString(4, gson.toJson(data.progress))
                 ps.setString(5, gson.toJson(data.userVariables))
+                ps.setString(6, gson.toJson(data.cooldowns))
                 ps.executeUpdate()
             }
         }
@@ -80,5 +82,11 @@ class SqliteUserDataRepository(private val dataSource: HikariDataSource) : UserD
         if (raw.isNullOrBlank()) return mutableMapOf()
         val type = object : TypeToken<Map<String, String>>() {}.type
         return runCatching { gson.fromJson<Map<String, String>>(raw, type).toMutableMap() }.getOrElse { mutableMapOf() }
+    }
+
+    private fun parseCooldowns(raw: String?): MutableMap<String, QuestCooldown> {
+        if (raw.isNullOrBlank()) return mutableMapOf()
+        val type = object : TypeToken<Map<String, QuestCooldown>>() {}.type
+        return runCatching { gson.fromJson<Map<String, QuestCooldown>>(raw, type).toMutableMap() }.getOrElse { mutableMapOf() }
     }
 }

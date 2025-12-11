@@ -15,6 +15,7 @@ object MessageFormatter {
         var out = text
         Colors.placeholders().forEach { (k, v) ->
             out = out.replace("<$k>", v, ignoreCase = true)
+            out = out.replace("</$k>", "", ignoreCase = true)
         }
         return out
     }

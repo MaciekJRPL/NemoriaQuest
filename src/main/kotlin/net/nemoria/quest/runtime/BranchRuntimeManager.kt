@@ -30,6 +30,7 @@ import org.bukkit.potion.PotionEffectType
 import org.bukkit.scheduler.BukkitRunnable
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.sequences.asSequence
 import kotlin.math.sqrt
 
@@ -37,7 +38,7 @@ class BranchRuntimeManager(
     private val plugin: JavaPlugin,
     private val questService: QuestService
 ) {
-    private val sessions: MutableMap<UUID, BranchSession> = mutableMapOf()
+    private val sessions: MutableMap<UUID, BranchSession> = ConcurrentHashMap()
     private val divergeSessions: MutableMap<UUID, DivergeChatSession> = mutableMapOf()
     private val pendingPrompts: MutableMap<String, ActionContinuation> = mutableMapOf()
     private val pendingSneaks: MutableMap<UUID, ActionContinuation> = mutableMapOf()
@@ -135,9 +136,21 @@ class BranchRuntimeManager(
 
     fun start(player: OfflinePlayer, model: QuestModel) {
         val saved = questService.progress(player)[model.id]
-        val branchId = saved?.currentBranchId ?: model.mainBranch ?: model.branches.keys.firstOrNull() ?: return
-        val branch = model.branches[branchId] ?: return
-        val startNodeId = saved?.currentNodeId ?: branch.startsAt ?: branch.objects.keys.firstOrNull() ?: return
+        val branchId = saved?.currentBranchId ?: model.mainBranch ?: model.branches.keys.firstOrNull()
+        if (branchId == null) {
+            questService.stopQuest(player, model.id, complete = false)
+            return
+        }
+        val branch = model.branches[branchId]
+        if (branch == null) {
+            questService.stopQuest(player, model.id, complete = false)
+            return
+        }
+        val startNodeId = saved?.currentNodeId ?: branch.startsAt ?: branch.objects.keys.firstOrNull()
+        if (startNodeId == null || !branch.objects.containsKey(startNodeId)) {
+            questService.stopQuest(player, model.id, complete = false)
+            return
+        }
         net.nemoria.quest.core.DebugLog.log("Branch start quest=${model.id} branch=$branchId node=$startNodeId (resume=${saved?.currentNodeId != null})")
         val session = BranchSession(model.id, branchId, startNodeId)
         sessions[player.uniqueId] = session
@@ -217,6 +230,9 @@ class BranchRuntimeManager(
         sessions.remove(player.uniqueId)?.let { sess ->
             sess.timeLimitTask?.cancel()
             sess.waitTasks.values.forEach { it.cancel() }
+            sess.waitTasks.clear()
+            sess.transientTasks.forEach { it.cancel() }
+            sess.transientTasks.clear()
         }
         val hadDialog = divergeSessions.remove(player.uniqueId) != null
         val bukkit = player.player
@@ -232,6 +248,26 @@ class BranchRuntimeManager(
         pendingPrompts.entries.removeIf { it.value.playerId == player.uniqueId }
     }
 
+    private fun trackTask(playerId: UUID, task: org.bukkit.scheduler.BukkitTask) {
+        sessions[playerId]?.transientTasks?.add(task)
+    }
+
+    fun shutdown() {
+        sessions.values.forEach { sess ->
+            sess.timeLimitTask?.cancel()
+            sess.waitTasks.values.forEach { it.cancel() }
+            sess.transientTasks.forEach { it.cancel() }
+            sess.waitTasks.clear()
+            sess.transientTasks.clear()
+        }
+        sessions.clear()
+        divergeSessions.clear()
+        pendingPrompts.clear()
+        pendingSneaks.clear()
+        pendingNavigations.clear()
+        guiSessions.clear()
+    }
+
     private fun runNode(player: OfflinePlayer, model: QuestModel, branchId: String, nodeId: String, delayTicks: Long) {
         val branch = model.branches[branchId] ?: return
         val node = branch.objects[nodeId]
@@ -241,12 +277,13 @@ class BranchRuntimeManager(
         }
         net.nemoria.quest.core.DebugLog.log("Schedule node quest=${model.id} branch=$branchId node=$nodeId delay=$delayTicks")
         sessions[player.uniqueId]?.nodeId = nodeId
-        object : BukkitRunnable() {
+        val task = object : BukkitRunnable() {
             override fun run() {
                 net.nemoria.quest.core.DebugLog.log("Execute node quest=${model.id} branch=$branchId node=$nodeId")
                 executeNode(player, model, branchId, node)
             }
         }.runTaskLater(plugin, delayTicks)
+        trackTask(player.uniqueId, task)
     }
 
     private fun executeNode(player: OfflinePlayer, model: QuestModel, branchId: String, node: QuestObjectNode) {
@@ -606,11 +643,11 @@ class BranchRuntimeManager(
             DebugLog.log("Action node=${node.id} key=$key payload=$payload delay=$delay")
             when (key) {
                 "WAIT_TICKS" -> delay += payload.toLongOrNull() ?: 0L
-                "SEND_MESSAGE" -> schedule(delay) {
+                "SEND_MESSAGE" -> schedule(delay, bukkitPlayer.uniqueId) {
                     MessageFormatter.send(bukkitPlayer, renderRaw(payload, model, player))
                 }
-                "SEND_SOUND" -> schedule(delay) { playSound(bukkitPlayer, payload) }
-                "SEND_TITLE" -> schedule(delay) {
+                "SEND_SOUND" -> schedule(delay, bukkitPlayer.uniqueId) { playSound(bukkitPlayer, payload) }
+                "SEND_TITLE" -> schedule(delay, bukkitPlayer.uniqueId) {
                     val partsTitle = payload.split("\\s+".toRegex(), limit = 5)
                     val fadeIn = partsTitle.getOrNull(0)?.toIntOrNull() ?: 10
                     val stay = partsTitle.getOrNull(1)?.toIntOrNull() ?: 60
@@ -621,13 +658,13 @@ class BranchRuntimeManager(
                     val subText = MessageFormatter.format(renderRaw(titles.getOrNull(1) ?: "", model, player))
                     bukkitPlayer.sendTitle(titleText, subText, fadeIn, stay, fadeOut)
                 }
-                "SEND_PARTICLES" -> schedule(delay) {
+                "SEND_PARTICLES" -> schedule(delay, bukkitPlayer.uniqueId) {
                     val params = payload.split("\\s+".toRegex())
                     val questOnly = params.getOrNull(2)?.toBooleanStrictOrNull() ?: true
                     spawnParticles(bukkitPlayer, payload, allPlayers = !questOnly)
                 }
-                "GIVE_EFFECT" -> schedule(delay) { giveEffect(bukkitPlayer, payload) }
-                "PERFORM_COMMAND" -> schedule(delay) {
+                "GIVE_EFFECT" -> schedule(delay, bukkitPlayer.uniqueId) { giveEffect(bukkitPlayer, payload) }
+                "PERFORM_COMMAND" -> schedule(delay, bukkitPlayer.uniqueId) {
                     val partsCmd = payload.split("\\s+".toRegex(), limit = 2)
                     val asPlayer = partsCmd.getOrNull(0)?.equals("true", ignoreCase = true) == true ||
                         partsCmd.getOrNull(0)?.equals("player", ignoreCase = true) == true
@@ -638,46 +675,46 @@ class BranchRuntimeManager(
                         else plugin.server.dispatchCommand(plugin.server.consoleSender, rendered)
                     }
                 }
-                "PERFORM_COMMAND_AS_PLAYER" -> schedule(delay) {
+                "PERFORM_COMMAND_AS_PLAYER" -> schedule(delay, bukkitPlayer.uniqueId) {
                     val cmd = renderRaw(payload, model, player).replace("{player}", bukkitPlayer.name)
                     plugin.server.dispatchCommand(bukkitPlayer, cmd)
                 }
-                "PERFORM_COMMAND_AS_OP_PLAYER" -> schedule(delay) {
+                "PERFORM_COMMAND_AS_OP_PLAYER" -> schedule(delay, bukkitPlayer.uniqueId) {
                     val cmd = renderRaw(payload, model, player).replace("{player}", bukkitPlayer.name)
                     val prev = bukkitPlayer.isOp
                     bukkitPlayer.isOp = true
                     plugin.server.dispatchCommand(bukkitPlayer, cmd)
                     bukkitPlayer.isOp = prev
                 }
-                "PERFORM_OBJECT" -> schedule(delay) {
+                "PERFORM_OBJECT" -> schedule(delay, bukkitPlayer.uniqueId) {
                     val partsObj = payload.split("\\s+".toRegex(), limit = 2)
                     val bId = partsObj.getOrNull(0) ?: return@schedule
                     val nId = normalizeTarget(partsObj.getOrNull(1) ?: return@schedule)
                     runNode(player, model, bId, nId, 0)
                 }
-                "PERFORM_PARTICLE_SCRIPT" -> schedule(delay) { runParticleScript(bukkitPlayer, payload) }
-                "START_BRANCH", "START_INDIVIDUAL_BRANCH" -> schedule(delay) {
+                "PERFORM_PARTICLE_SCRIPT" -> schedule(delay, bukkitPlayer.uniqueId) { runParticleScript(bukkitPlayer, payload) }
+                "START_BRANCH", "START_INDIVIDUAL_BRANCH" -> schedule(delay, bukkitPlayer.uniqueId) {
                     val bId = payload.trim()
                     val branch = model.branches[bId] ?: return@schedule
                     val startNode = branch.startsAt ?: branch.objects.keys.firstOrNull() ?: return@schedule
                     sessions[bukkitPlayer.uniqueId] = BranchSession(model.id, bId, startNode)
                     runNode(player, model, bId, startNode, 0)
                 }
-                "STOP_BRANCH" -> schedule(delay) {
+                "STOP_BRANCH" -> schedule(delay, bukkitPlayer.uniqueId) {
                     val session = sessions[bukkitPlayer.uniqueId]
                     if (session != null && (payload.isBlank() || session.branchId.equals(payload.trim(), true))) {
                         sessions.remove(bukkitPlayer.uniqueId)
                     }
                 }
-                "START_QUEST", "START_FUNCTIONAL_QUEST" -> schedule(delay) {
+                "START_QUEST", "START_FUNCTIONAL_QUEST" -> schedule(delay, bukkitPlayer.uniqueId) {
                     questService.startQuest(bukkitPlayer, payload.trim())
                 }
-                "STOP_QUEST", "STOP_FUNCTIONAL_QUEST" -> schedule(delay) {
+                "STOP_QUEST", "STOP_FUNCTIONAL_QUEST" -> schedule(delay, bukkitPlayer.uniqueId) {
                     questService.stopQuest(bukkitPlayer, payload.trim(), complete = false)
                 }
                 "PROMPT_NEXT" -> {
                     val token = UUID.randomUUID().toString()
-                    schedule(delay) { sendPrompt(bukkitPlayer, renderRaw(payload, model, player), token) }
+                    schedule(delay, bukkitPlayer.uniqueId) { sendPrompt(bukkitPlayer, renderRaw(payload, model, player), token) }
                     pendingPrompts[token] = ActionContinuation(
                         playerId = bukkitPlayer.uniqueId,
                         questId = model.id,
@@ -689,7 +726,7 @@ class BranchRuntimeManager(
                     return
                 }
                 "PROMPT_NEXT_SNEAK" -> {
-                    schedule(delay) {
+                    schedule(delay, bukkitPlayer.uniqueId) {
                         if (payload.isNotBlank()) MessageFormatter.send(bukkitPlayer, renderRaw(payload, model, player))
                         MessageFormatter.send(bukkitPlayer, "<gray>Kucnij, aby kontynuować...")
                     }
@@ -754,12 +791,15 @@ class BranchRuntimeManager(
         runNode(player, model, branchId, next, 0)
     }
 
-    private fun schedule(delay: Long, block: () -> Unit) {
-        object : BukkitRunnable() {
+    private fun schedule(delay: Long, playerId: UUID? = null, block: () -> Unit) {
+        val task = object : BukkitRunnable() {
             override fun run() {
                 block()
             }
         }.runTaskLater(plugin, delay)
+        if (playerId != null) {
+            trackTask(playerId, task)
+        }
     }
 
     private fun sendPrompt(player: org.bukkit.entity.Player, message: String, token: String) {
@@ -2509,7 +2549,8 @@ class BranchRuntimeManager(
         val physicalProgress: MutableMap<String, Double> = mutableMapOf(),
         val miscProgress: MutableMap<String, Double> = mutableMapOf(),
         val waitTasks: MutableMap<String, org.bukkit.scheduler.BukkitTask> = mutableMapOf(),
-        val positionActionbarHint: MutableMap<String, Long> = mutableMapOf()
+        val positionActionbarHint: MutableMap<String, Long> = mutableMapOf(),
+        val transientTasks: MutableSet<org.bukkit.scheduler.BukkitTask> = mutableSetOf()
     )
 
     private data class ActionContinuation(
@@ -2553,8 +2594,3 @@ class BranchRuntimeManager(
         var selected: Boolean = false
     )
 }
-
-
-
-
-
