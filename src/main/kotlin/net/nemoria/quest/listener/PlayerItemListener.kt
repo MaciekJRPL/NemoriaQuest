@@ -248,7 +248,7 @@ class PlayerItemListener : Listener {
         val topType = event.view.topInventory.type.name
         val isFurnaceLike = topType == InventoryType.FURNACE.name || topType == InventoryType.BLAST_FURNACE.name || topType == InventoryType.SMOKER.name
         if (event.view.topInventory.type == InventoryType.CRAFTING) return
-        val cursor = event.oldCursor
+        val cursor = event.oldCursor ?: return
         if (cursor.type.isAir) return
         if (isPutNode && isCounted(cursor, countedPutKey)) return
         val topSize = event.view.topInventory.size

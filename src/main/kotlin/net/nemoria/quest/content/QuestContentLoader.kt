@@ -87,6 +87,20 @@ object QuestContentLoader {
             CompletionSettings(maxCompletions = maxComp, notify = notify)
         } ?: CompletionSettings()
         val activators = cfg.getStringList("activators")
+        val activatorsDialog = when (val raw = cfg.get("activators_dialog")) {
+            null -> emptyList()
+            is List<*> -> raw.mapNotNull { it?.toString() }
+            is String -> raw.lines().map { it.trim() }
+            else -> emptyList()
+        }
+        val activatorsDialogAutoStartDistance =
+            if (cfg.contains("activators_dialog_auto_start_distance")) cfg.getDouble("activators_dialog_auto_start_distance") else null
+        val activatorsDialogResetSec = cfg.getConfigurationSection("activators_dialog_reset")
+        val activatorsDialogResetDelaySeconds =
+            activatorsDialogResetSec?.getString("reset_delay")?.let { parseDurationSeconds(it) }
+        val activatorsDialogResetDistance =
+            if (activatorsDialogResetSec != null && activatorsDialogResetSec.contains("reset_distance")) activatorsDialogResetSec.getDouble("reset_distance") else null
+        val activatorsDialogResetNotify = parseNotify(activatorsDialogResetSec?.getConfigurationSection("reset_notify"))
         val progressNotify = cfg.getConfigurationSection("progress_notify")?.let {
             val actionbar = it.getString("actionbar")
             val durationRaw = it.getString("actionbar_duration")
@@ -175,6 +189,11 @@ object QuestContentLoader {
             startConditions = startConditions,
             completion = completion,
             activators = activators,
+            activatorsDialog = activatorsDialog,
+            activatorsDialogAutoStartDistance = activatorsDialogAutoStartDistance,
+            activatorsDialogResetDelaySeconds = activatorsDialogResetDelaySeconds,
+            activatorsDialogResetDistance = activatorsDialogResetDistance,
+            activatorsDialogResetNotify = activatorsDialogResetNotify,
             progressNotify = progressNotify,
             statusItems = statusItems,
             defaultStatusItem = defaultStatusItem,
@@ -241,6 +260,8 @@ object QuestContentLoader {
         }
         val desc = sec.getString("objective_detail") ?: sec.getString("description")
         val actions = sec.getStringList("actions")
+        val msgRaw = sec.get("messages") ?: sec.get("message")
+        val message = readStringListFlexible(msgRaw)
         val goto = sec.getString("goto")
         val gotos = readStringListFlexible(sec.get("gotos"))
         val randomGotos = readStringListFlexible(sec.get("random_gotos"))
@@ -263,7 +284,11 @@ object QuestContentLoader {
                 else -> null
             }
         } ?: emptyList()
-        val count = sec.getInt("count", 1)
+        val count = when {
+            sec.isInt("count") -> sec.getInt("count")
+            sec.isInt("goal") -> sec.getInt("goal")
+            else -> 1
+        }
         val variable = sec.getString("variable")
         val valueFormula = sec.getString("value_formula")
         val sound = sec.getString("sound")
@@ -291,7 +316,17 @@ object QuestContentLoader {
         val hideChat = sec.getBoolean("hide_chat", false)
         val dialogMode = sec.getBoolean("dialog", false)
         val npcId = sec.getInt("npc", -1).let { if (it >= 0) it else null }
+        val npcNames = readStringListFlexible(sec.get("npc_names"))
         val clickTypes = sec.getStringList("click_types")
+        val resetSec = sec.getConfigurationSection("reset")
+        val resetDelayTicks = resetSec?.getString("reset_delay")?.let { parseDurationSeconds(it) }?.times(20)
+        val resetDistance = resetSec?.getDouble("reset_distance", Double.NaN).let { if (it == null || it.isNaN()) null else it }
+        val resetNotify = parseNotify(resetSec?.getConfigurationSection("reset_notify"))
+        val resetGoto = resetSec?.getString("reset_goto")
+        val waitForCompletion = sec.getBoolean("wait_for_completion", false)
+        val waitForPlayerRadius = sec.getDouble("wait_for_player_radius", Double.NaN).let { if (it.isNaN()) null else it }
+        val waitForPlayerNotify = parseNotify(sec.getConfigurationSection("wait_for_player_notify"))
+        val waitForPlayerNotifyDelayTicks = sec.getString("wait_for_player_notify_delay")?.let { parseDurationSeconds(it) }?.times(20)
         val choices = sec.getConfigurationSection("choices")?.getKeys(false)?.mapNotNull { key ->
             val choiceSec = sec.getConfigurationSection("choices.$key") ?: return@mapNotNull null
             val text = choiceSec.getString("text") ?: return@mapNotNull null
@@ -323,6 +358,7 @@ object QuestContentLoader {
             else -> false
         }
         val isPlayerItemType = when (type) {
+            QuestObjectNodeType.PLAYER_CITIZENS_NPC_DELIVER_ITEMS,
             QuestObjectNodeType.PLAYER_ITEMS_ACQUIRE,
             QuestObjectNodeType.PLAYER_ITEMS_BREW,
             QuestObjectNodeType.PLAYER_ITEMS_CONSUME,
@@ -466,6 +502,7 @@ object QuestContentLoader {
             type = type,
             description = desc,
             actions = actions,
+            message = message,
             goto = goto,
             gotos = gotos,
             logic = logic,
@@ -480,7 +517,16 @@ object QuestContentLoader {
             hideChat = hideChat,
             dialog = dialogMode,
             npcId = npcId,
+            npcNames = npcNames,
             clickTypes = clickTypes,
+            resetDelayTicks = resetDelayTicks,
+            resetDistance = resetDistance,
+            resetNotify = resetNotify,
+            resetGoto = resetGoto,
+            waitForCompletion = waitForCompletion,
+            waitForPlayerRadius = waitForPlayerRadius,
+            waitForPlayerNotify = waitForPlayerNotify,
+            waitForPlayerNotifyDelayTicks = waitForPlayerNotifyDelayTicks,
             choices = choices,
             cases = cases,
             goals = goals,

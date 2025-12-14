@@ -35,11 +35,17 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
         }
         dataSource.connection.use { conn ->
             conn.prepareStatement(
-                "SELECT name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators, description_placeholder, information_message, display_priority, default_status_item, permission_start_restriction, permission_start_command_restriction, world_restriction, command_restriction, cooldown FROM quest_model WHERE id = ?"
+                "SELECT name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators, activators_dialog, activators_dialog_auto_start_distance, activators_dialog_reset_delay, activators_dialog_reset_distance, activators_dialog_reset_notify, description_placeholder, information_message, display_priority, default_status_item, permission_start_restriction, permission_start_command_restriction, world_restriction, command_restriction, cooldown FROM quest_model WHERE id = ?"
             ).use { ps ->
                 ps.setString(1, id)
                 ps.executeQuery().use { rs ->
                     if (rs.next()) {
+                        val activatorsDialogAutoStartDistance =
+                            rs.getDouble("activators_dialog_auto_start_distance").let { if (rs.wasNull()) null else it }
+                        val activatorsDialogResetDelaySeconds =
+                            rs.getLong("activators_dialog_reset_delay").let { if (rs.wasNull()) null else it }
+                        val activatorsDialogResetDistance =
+                            rs.getDouble("activators_dialog_reset_distance").let { if (rs.wasNull()) null else it }
                         val model = QuestModel(
                             id = id,
                             name = rs.getString("name"),
@@ -57,6 +63,11 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
                             startConditions = parseStartConditions(rs.getString("start_conditions")),
                             completion = parseCompletion(rs.getString("completion")),
                             activators = parseActivators(rs.getString("activators")),
+                            activatorsDialog = parseStringList(rs.getString("activators_dialog")),
+                            activatorsDialogAutoStartDistance = activatorsDialogAutoStartDistance,
+                            activatorsDialogResetDelaySeconds = activatorsDialogResetDelaySeconds,
+                            activatorsDialogResetDistance = activatorsDialogResetDistance,
+                            activatorsDialogResetNotify = parseNotifySettings(rs.getString("activators_dialog_reset_notify")),
                             timeLimit = parseTimeLimit(rs.getString("time_limit")),
                             variables = parseVariables(rs.getString("variables")),
                             branches = parseBranches(rs.getString("branches")),
@@ -92,10 +103,16 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
         val list = mutableListOf<QuestModel>()
         dataSource.connection.use { conn ->
             conn.prepareStatement(
-                "SELECT id, name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators, description_placeholder, information_message, display_priority, default_status_item, permission_start_restriction, permission_start_command_restriction, world_restriction, command_restriction, cooldown FROM quest_model"
+                "SELECT id, name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators, activators_dialog, activators_dialog_auto_start_distance, activators_dialog_reset_delay, activators_dialog_reset_distance, activators_dialog_reset_notify, description_placeholder, information_message, display_priority, default_status_item, permission_start_restriction, permission_start_command_restriction, world_restriction, command_restriction, cooldown FROM quest_model"
             ).use { ps ->
                 ps.executeQuery().use { rs ->
                     while (rs.next()) {
+                        val activatorsDialogAutoStartDistance =
+                            rs.getDouble("activators_dialog_auto_start_distance").let { if (rs.wasNull()) null else it }
+                        val activatorsDialogResetDelaySeconds =
+                            rs.getLong("activators_dialog_reset_delay").let { if (rs.wasNull()) null else it }
+                        val activatorsDialogResetDistance =
+                            rs.getDouble("activators_dialog_reset_distance").let { if (rs.wasNull()) null else it }
                         val model = QuestModel(
                             id = rs.getString("id"),
                             name = rs.getString("name"),
@@ -113,6 +130,11 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
                             startConditions = parseStartConditions(rs.getString("start_conditions")),
                             completion = parseCompletion(rs.getString("completion")),
                             activators = parseActivators(rs.getString("activators")),
+                            activatorsDialog = parseStringList(rs.getString("activators_dialog")),
+                            activatorsDialogAutoStartDistance = activatorsDialogAutoStartDistance,
+                            activatorsDialogResetDelaySeconds = activatorsDialogResetDelaySeconds,
+                            activatorsDialogResetDistance = activatorsDialogResetDistance,
+                            activatorsDialogResetNotify = parseNotifySettings(rs.getString("activators_dialog_reset_notify")),
                             timeLimit = parseTimeLimit(rs.getString("time_limit")),
                             variables = parseVariables(rs.getString("variables")),
                             branches = parseBranches(rs.getString("branches")),
@@ -143,9 +165,9 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
         dataSource.connection.use { conn ->
             conn.prepareStatement(
                 """
-                INSERT INTO quest_model(id, name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators, description_placeholder, information_message, display_priority, default_status_item, permission_start_restriction, permission_start_command_restriction, world_restriction, command_restriction, cooldown)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description, display_name = excluded.display_name, description_lines = excluded.description_lines, progress_notify = excluded.progress_notify, status_items = excluded.status_items, requirements = excluded.requirements, objectives = excluded.objectives, rewards = excluded.rewards, time_limit = excluded.time_limit, variables = excluded.variables, branches = excluded.branches, main_branch = excluded.main_branch, end_objects = excluded.end_objects, saving = excluded.saving, concurrency = excluded.concurrency, players = excluded.players, start_conditions = excluded.start_conditions, completion = excluded.completion, activators = excluded.activators, description_placeholder = excluded.description_placeholder, information_message = excluded.information_message, display_priority = excluded.display_priority, default_status_item = excluded.default_status_item, permission_start_restriction = excluded.permission_start_restriction, permission_start_command_restriction = excluded.permission_start_command_restriction, world_restriction = excluded.world_restriction, command_restriction = excluded.command_restriction, cooldown = excluded.cooldown
+                INSERT INTO quest_model(id, name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators, activators_dialog, activators_dialog_auto_start_distance, activators_dialog_reset_delay, activators_dialog_reset_distance, activators_dialog_reset_notify, description_placeholder, information_message, display_priority, default_status_item, permission_start_restriction, permission_start_command_restriction, world_restriction, command_restriction, cooldown)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description, display_name = excluded.display_name, description_lines = excluded.description_lines, progress_notify = excluded.progress_notify, status_items = excluded.status_items, requirements = excluded.requirements, objectives = excluded.objectives, rewards = excluded.rewards, time_limit = excluded.time_limit, variables = excluded.variables, branches = excluded.branches, main_branch = excluded.main_branch, end_objects = excluded.end_objects, saving = excluded.saving, concurrency = excluded.concurrency, players = excluded.players, start_conditions = excluded.start_conditions, completion = excluded.completion, activators = excluded.activators, activators_dialog = excluded.activators_dialog, activators_dialog_auto_start_distance = excluded.activators_dialog_auto_start_distance, activators_dialog_reset_delay = excluded.activators_dialog_reset_delay, activators_dialog_reset_distance = excluded.activators_dialog_reset_distance, activators_dialog_reset_notify = excluded.activators_dialog_reset_notify, description_placeholder = excluded.description_placeholder, information_message = excluded.information_message, display_priority = excluded.display_priority, default_status_item = excluded.default_status_item, permission_start_restriction = excluded.permission_start_restriction, permission_start_command_restriction = excluded.permission_start_command_restriction, world_restriction = excluded.world_restriction, command_restriction = excluded.command_restriction, cooldown = excluded.cooldown
                 """.trimIndent()
             ).use { ps ->
                 ps.setString(1, model.id)
@@ -169,15 +191,20 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
                 ps.setString(19, gson.toJson(model.startConditions))
                 ps.setString(20, gson.toJson(model.completion))
                 ps.setString(21, gson.toJson(model.activators))
-                ps.setString(22, model.descriptionPlaceholder)
-                ps.setString(23, model.informationMessage)
-                if (model.displayPriority != null) ps.setInt(24, model.displayPriority) else ps.setNull(24, java.sql.Types.INTEGER)
-                ps.setString(25, gson.toJson(model.defaultStatusItem))
-                ps.setString(26, model.permissionStartRestriction)
-                ps.setString(27, model.permissionStartCommandRestriction)
-                ps.setString(28, gson.toJson(model.worldRestriction))
-                ps.setString(29, gson.toJson(model.commandRestriction))
-                ps.setString(30, gson.toJson(model.cooldown))
+                ps.setString(22, gson.toJson(model.activatorsDialog))
+                if (model.activatorsDialogAutoStartDistance != null) ps.setDouble(23, model.activatorsDialogAutoStartDistance) else ps.setNull(23, java.sql.Types.REAL)
+                if (model.activatorsDialogResetDelaySeconds != null) ps.setLong(24, model.activatorsDialogResetDelaySeconds) else ps.setNull(24, java.sql.Types.BIGINT)
+                if (model.activatorsDialogResetDistance != null) ps.setDouble(25, model.activatorsDialogResetDistance) else ps.setNull(25, java.sql.Types.REAL)
+                ps.setString(26, gson.toJson(model.activatorsDialogResetNotify))
+                ps.setString(27, model.descriptionPlaceholder)
+                ps.setString(28, model.informationMessage)
+                if (model.displayPriority != null) ps.setInt(29, model.displayPriority) else ps.setNull(29, java.sql.Types.INTEGER)
+                ps.setString(30, gson.toJson(model.defaultStatusItem))
+                ps.setString(31, model.permissionStartRestriction)
+                ps.setString(32, model.permissionStartCommandRestriction)
+                ps.setString(33, gson.toJson(model.worldRestriction))
+                ps.setString(34, gson.toJson(model.commandRestriction))
+                ps.setString(35, gson.toJson(model.cooldown))
                 val rows = ps.executeUpdate()
                 DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteQuestModelRepository.kt:181", "save completed", mapOf("questId" to model.id, "rowsAffected" to rows))
             }
@@ -278,5 +305,15 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
     private fun parseActivators(raw: String?): List<String> {
         if (raw.isNullOrBlank()) return emptyList()
         return runCatching { gson.fromJson<List<String>>(raw, requirementsType) }.getOrDefault(emptyList())
+    }
+
+    private fun parseStringList(raw: String?): List<String> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching { gson.fromJson<List<String>>(raw, requirementsType) }.getOrDefault(emptyList())
+    }
+
+    private fun parseNotifySettings(raw: String?): NotifySettings? {
+        if (raw.isNullOrBlank()) return null
+        return runCatching { gson.fromJson(raw, NotifySettings::class.java) }.getOrNull()
     }
 }

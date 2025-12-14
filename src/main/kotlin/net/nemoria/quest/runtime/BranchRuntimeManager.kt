@@ -620,6 +620,21 @@ class BranchRuntimeManager(
                 DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:528", "executeNode NPC_INTERACT", mapOf("questId" to model.id, "nodeId" to node.id, "npcId" to (node.npcId ?: "null")))
                 sessions[player.uniqueId]?.nodeId = node.id
             }
+            QuestObjectNodeType.PLAYER_CITIZENS_NPC_DELIVER_ITEMS,
+            QuestObjectNodeType.PLAYER_CITIZENS_NPC_DIALOG,
+            QuestObjectNodeType.PLAYER_CITIZENS_NPC_INTERACT,
+            QuestObjectNodeType.PLAYER_CITIZENS_NPC_KILL -> {
+                DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:623", "executeNode PLAYER_CITIZENS_NPC", mapOf("questId" to model.id, "nodeId" to node.id, "nodeType" to node.type.name, "npcId" to (node.npcId ?: "null")))
+                sessions[player.uniqueId]?.nodeId = node.id
+            }
+            QuestObjectNodeType.SERVER_CITIZENS_NPC_NAVIGATE -> {
+                DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:629", "executeNode SERVER_CITIZENS_NPC_NAVIGATE", mapOf("questId" to model.id, "nodeId" to node.id, "npcId" to (node.npcId ?: "null"), "waitForCompletion" to node.waitForCompletion, "waitForPlayerRadius" to (node.waitForPlayerRadius ?: "null")))
+                executeCitizensNavigate(player, model, branchId, node)
+            }
+            QuestObjectNodeType.SERVER_CITIZENS_NPC_TELEPORT -> {
+                DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:632", "executeNode SERVER_CITIZENS_NPC_TELEPORT", mapOf("questId" to model.id, "nodeId" to node.id, "npcId" to (node.npcId ?: "null")))
+                executeCitizensTeleport(player, model, branchId, node)
+            }
             QuestObjectNodeType.DIVERGE_CHAT -> {
                 DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:531", "executeNode DIVERGE_CHAT", mapOf("questId" to model.id, "nodeId" to node.id, "choicesCount" to node.choices.size, "hideChat" to node.hideChat, "dialog" to node.dialog))
                 sessions[player.uniqueId]?.nodeId = node.id
@@ -1044,6 +1059,33 @@ class BranchRuntimeManager(
         resumeContinuation(player, cont)
     }
 
+    fun performParticleScriptAtLocation(viewer: org.bukkit.entity.Player, scriptId: String, location: org.bukkit.Location) {
+        val id = scriptId.trim()
+        if (id.isEmpty()) return
+        val world = location.world ?: return
+        if (viewer.world != world) return
+
+        val script = particleScripts[id] ?: loadParticleScript(id)?.also { particleScripts[id] = it }
+        if (script == null) {
+            val particle = runCatching { org.bukkit.Particle.valueOf(id.uppercase()) }.getOrNull() ?: return
+            viewer.spawnParticle(particle, location, 10, 0.0, 0.0, 0.0, 0.0)
+            return
+        }
+
+        val interval = script.interval.coerceAtLeast(1L)
+        object : BukkitRunnable() {
+            var ticks = 0L
+            override fun run() {
+                if (!viewer.isOnline) { cancel(); return }
+                if (viewer.world != world) { cancel(); return }
+                if (ticks >= script.duration) { cancel(); return }
+                val loc = location.clone().add(script.offsetX, script.offsetY, script.offsetZ)
+                viewer.spawnParticle(script.particle, loc, script.count, script.spreadX, script.spreadY, script.spreadZ, script.speed)
+                ticks += interval
+            }
+        }.runTaskTimer(plugin, 0L, interval)
+    }
+
     private fun runParticleScript(player: org.bukkit.entity.Player, payload: String) {
         DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1255", "runParticleScript entry", mapOf("playerUuid" to player.uniqueId.toString(), "payload" to payload))
         val id = payload.trim()
@@ -1177,6 +1219,174 @@ class BranchRuntimeManager(
             }
         }.runTaskTimer(plugin, 10L, 10L)
         return true
+    }
+
+    private fun citizensNpcById(npcId: Int): Any? {
+        return runCatching {
+            val api = Class.forName("net.citizensnpcs.api.CitizensAPI")
+            val reg = api.getMethod("getNPCRegistry").invoke(null)
+            val getNpc = reg.javaClass.getMethod("getById", Int::class.javaPrimitiveType)
+            getNpc.invoke(reg, npcId)
+        }.onFailure { ex ->
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1194", "citizensNpcById error", mapOf("npcId" to npcId, "errorType" to ex.javaClass.simpleName, "errorMessage" to (ex.message?.take(100) ?: "null")))
+        }.getOrNull()
+    }
+
+    private fun citizensNpcEntityById(npcId: Int): org.bukkit.entity.Entity? {
+        val npc = citizensNpcById(npcId) ?: return null
+        return runCatching {
+            val getEntity = npc.javaClass.getMethod("getEntity")
+            getEntity.invoke(npc) as? org.bukkit.entity.Entity
+        }.onFailure { ex ->
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1205", "citizensNpcEntityById error", mapOf("npcId" to npcId, "errorType" to ex.javaClass.simpleName, "errorMessage" to (ex.message?.take(100) ?: "null")))
+        }.getOrNull()
+    }
+
+    private fun citizensNpcNavigatorById(npcId: Int): Any? {
+        val npc = citizensNpcById(npcId) ?: return null
+        return runCatching { npc.javaClass.getMethod("getNavigator").invoke(npc) }.onFailure { ex ->
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1213", "citizensNpcNavigatorById error", mapOf("npcId" to npcId, "errorType" to ex.javaClass.simpleName, "errorMessage" to (ex.message?.take(100) ?: "null")))
+        }.getOrNull()
+    }
+
+    private fun executeCitizensTeleport(player: OfflinePlayer, model: QuestModel, branchId: String, node: QuestObjectNode) {
+        DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1216", "executeCitizensTeleport entry", mapOf("playerUuid" to player.uniqueId.toString(), "questId" to model.id, "nodeId" to node.id, "npcId" to (node.npcId ?: "null")))
+        val bukkit = player.player ?: run {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1217", "executeCitizensTeleport player offline", mapOf("playerUuid" to player.uniqueId.toString()))
+            return
+        }
+        val npcId = node.npcId ?: run {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1218", "executeCitizensTeleport npcId null", mapOf("playerUuid" to player.uniqueId.toString(), "nodeId" to node.id))
+            return
+        }
+        val target = resolvePosition(bukkit, node.teleportPosition ?: node.position)
+        val npc = citizensNpcById(npcId) ?: run {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1220", "executeCitizensTeleport npc not found", mapOf("playerUuid" to player.uniqueId.toString(), "npcId" to npcId))
+            return
+        }
+        val teleported = runCatching {
+            val entity = runCatching { npc.javaClass.getMethod("getEntity").invoke(npc) as? org.bukkit.entity.Entity }.getOrNull()
+            if (entity != null) {
+                entity.teleport(target)
+                true
+            } else {
+                val spawn = npc.javaClass.methods.firstOrNull { it.name.equals("spawn", true) && it.parameterTypes.size == 1 && it.parameterTypes[0] == org.bukkit.Location::class.java }
+                if (spawn != null) {
+                    spawn.invoke(npc, target)
+                    true
+                } else {
+                    val teleport = npc.javaClass.methods.firstOrNull { it.name.equals("teleport", true) && it.parameterTypes.size == 1 && it.parameterTypes[0] == org.bukkit.Location::class.java }
+                    teleport?.invoke(npc, target)
+                    teleport != null
+                }
+            }
+        }.getOrDefault(false)
+        DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1237", "executeCitizensTeleport result", mapOf("playerUuid" to player.uniqueId.toString(), "npcId" to npcId, "teleported" to teleported, "targetWorld" to (target.world?.name ?: "null"), "targetX" to target.x, "targetY" to target.y, "targetZ" to target.z))
+        if (teleported) {
+            node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
+        }
+    }
+
+    private fun executeCitizensNavigate(player: OfflinePlayer, model: QuestModel, branchId: String, node: QuestObjectNode) {
+        DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1243", "executeCitizensNavigate entry", mapOf("playerUuid" to player.uniqueId.toString(), "questId" to model.id, "nodeId" to node.id, "npcId" to (node.npcId ?: "null"), "waitForCompletion" to node.waitForCompletion, "waitForPlayerRadius" to (node.waitForPlayerRadius ?: "null")))
+        val bukkit = player.player ?: run {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1244", "executeCitizensNavigate player offline", mapOf("playerUuid" to player.uniqueId.toString()))
+            return
+        }
+        val npcId = node.npcId ?: run {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1245", "executeCitizensNavigate npcId null", mapOf("playerUuid" to player.uniqueId.toString(), "nodeId" to node.id))
+            return
+        }
+        val session = sessions[player.uniqueId] ?: run {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1246", "executeCitizensNavigate session not found", mapOf("playerUuid" to player.uniqueId.toString()))
+            return
+        }
+        val target = resolvePosition(bukkit, node.position)
+
+        fun startNavigation() {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1249", "executeCitizensNavigate startNavigation", mapOf("playerUuid" to player.uniqueId.toString(), "npcId" to npcId, "targetWorld" to (target.world?.name ?: "null"), "targetX" to target.x, "targetY" to target.y, "targetZ" to target.z))
+            val navigator = citizensNpcNavigatorById(npcId) ?: run {
+                DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1250", "executeCitizensNavigate navigator not found", mapOf("playerUuid" to player.uniqueId.toString(), "npcId" to npcId))
+                return
+            }
+            val setResult = runCatching {
+                val setTarget = navigator.javaClass.getMethod("setTarget", org.bukkit.Location::class.java)
+                setTarget.invoke(navigator, target)
+            }
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1253", "executeCitizensNavigate setTarget result", mapOf("playerUuid" to player.uniqueId.toString(), "npcId" to npcId, "success" to setResult.isSuccess, "waitForCompletion" to node.waitForCompletion))
+            if (!node.waitForCompletion) {
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
+                return
+            }
+            val waitKey = "cit_nav_wait:${node.id}"
+            session.waitTasks.remove(waitKey)?.cancel()
+            val waitTask = object : BukkitRunnable() {
+                override fun run() {
+                    val sess = sessions[player.uniqueId]
+                    if (sess == null || sess.nodeId != node.id) {
+                        cancel()
+                        sess?.waitTasks?.remove(waitKey)
+                        return
+                    }
+                    val nav = citizensNpcNavigatorById(npcId) ?: run {
+                        cancel()
+                        sess.waitTasks.remove(waitKey)
+                        return
+                    }
+                    val navigating = runCatching { nav.javaClass.getMethod("isNavigating").invoke(nav) as? Boolean ?: false }.getOrDefault(false)
+                    if (!navigating) {
+                        cancel()
+                        sess.waitTasks.remove(waitKey)
+                        node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
+                    }
+                }
+            }.runTaskTimer(plugin, 10L, 10L)
+            session.waitTasks[waitKey] = waitTask
+        }
+
+        val gateRadius = node.waitForPlayerRadius
+        if (gateRadius == null) {
+            startNavigation()
+            return
+        }
+
+        val gateKey = "cit_nav_gate:${node.id}"
+        session.waitTasks.remove(gateKey)?.cancel()
+        val radiusSq = gateRadius * gateRadius
+        val notifyDelay = node.waitForPlayerNotifyDelayTicks ?: 200L
+        val gateTask = object : BukkitRunnable() {
+            private var lastNotifyAt = 0L
+            override fun run() {
+                val sess = sessions[player.uniqueId]
+                if (sess == null || sess.nodeId != node.id) {
+                    cancel()
+                    sess?.waitTasks?.remove(gateKey)
+                    return
+                }
+                val npcEntity = citizensNpcEntityById(npcId)
+                if (npcEntity != null && npcEntity.world == bukkit.world) {
+                    val distSq = bukkit.location.distanceSquared(npcEntity.location)
+                    if (distSq <= radiusSq) {
+                        cancel()
+                        sess.waitTasks.remove(gateKey)
+                        startNavigation()
+                        return
+                    }
+                }
+                val notify = node.waitForPlayerNotify
+                if (notify != null) {
+                    val now = System.currentTimeMillis()
+                    if (lastNotifyAt == 0L || now - lastNotifyAt >= notifyDelay * 50L) {
+                        notify.message.forEach { msg -> MessageFormatter.send(bukkit, renderRaw(msg, model, player)) }
+                        notify.sound?.let { snd ->
+                            runCatching { Sound.valueOf(snd.uppercase()) }.onSuccess { bukkit.playSound(bukkit.location, it, 1f, 1f) }
+                        }
+                        lastNotifyAt = now
+                    }
+                }
+            }
+        }.runTaskTimer(plugin, 10L, 10L)
+        session.waitTasks[gateKey] = gateTask
     }
 
     private fun evaluateLogicSwitch(player: OfflinePlayer, model: QuestModel, node: QuestObjectNode): String? {
@@ -1328,33 +1538,336 @@ class BranchRuntimeManager(
         return t
     }
 
-    fun handleNpcInteract(player: OfflinePlayer, npcId: Int) {
-        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1043", "handleNpcInteract entry", mapOf("playerUuid" to player.uniqueId.toString(), "npcId" to npcId))
-        val session = sessions[player.uniqueId]
-        if (session == null) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1044", "handleNpcInteract no session", mapOf("playerUuid" to player.uniqueId.toString()))
+    fun handleNpcInteract(player: OfflinePlayer, npcId: Int, npcName: String?, clickType: String): Boolean {
+        DebugLog.logToFile(
+            "debug-session",
+            "run1",
+            "RUNTIME",
+            "BranchRuntimeManager.kt:1043",
+            "handleNpcInteract entry",
+            mapOf("playerUuid" to player.uniqueId.toString(), "npcId" to npcId, "npcName" to (npcName ?: "null"), "clickType" to clickType)
+        )
+        val session = sessions[player.uniqueId] ?: return false
+        val model = questService.questInfo(session.questId) ?: return false
+        val branch = model.branches[session.branchId] ?: return false
+        val node = branch.objects[session.nodeId] ?: return false
+
+        val supported = when (node.type) {
+            QuestObjectNodeType.NPC_INTERACT,
+            QuestObjectNodeType.PLAYER_CITIZENS_NPC_DELIVER_ITEMS,
+            QuestObjectNodeType.PLAYER_CITIZENS_NPC_DIALOG,
+            QuestObjectNodeType.PLAYER_CITIZENS_NPC_INTERACT -> true
+            else -> false
+        }
+        if (!supported) {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1528", "handleNpcInteract node type not supported", mapOf("playerUuid" to player.uniqueId.toString(), "nodeType" to node.type.name))
+            return false
+        }
+        if (!matchesNpc(node, npcId, npcName)) {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1529", "handleNpcInteract npc not matched", mapOf("playerUuid" to player.uniqueId.toString(), "npcId" to npcId, "npcName" to (npcName ?: "null"), "nodeNpcId" to (node.npcId ?: "null")))
+            return false
+        }
+        if (!isClickAllowed(node.clickTypes, clickType)) {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1530", "handleNpcInteract click not allowed", mapOf("playerUuid" to player.uniqueId.toString(), "clickType" to clickType, "allowedTypes" to node.clickTypes.joinToString()))
+            return false
+        }
+
+        when (node.type) {
+            QuestObjectNodeType.NPC_INTERACT -> {
+                val gotoRaw = node.goto ?: return true
+                val target = normalizeTarget(gotoRaw)
+                runNode(player, model, session.branchId, target, 0)
+                return true
+            }
+            QuestObjectNodeType.PLAYER_CITIZENS_NPC_INTERACT -> {
+                val goal = node.count.toDouble().coerceAtLeast(1.0)
+                val cur = questService.loadNodeProgress(player, model.id, session.branchId, node.id)
+                val updated = cur + 1.0
+                DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1539", "handleNpcInteract PLAYER_CITIZENS_NPC_INTERACT progress", mapOf("playerUuid" to player.uniqueId.toString(), "questId" to model.id, "nodeId" to node.id, "current" to cur, "updated" to updated, "goal" to goal))
+                questService.saveNodeProgress(player, model.id, session.branchId, node.id, updated)
+                if (updated >= goal) {
+                    DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1544", "handleNpcInteract PLAYER_CITIZENS_NPC_INTERACT goal reached", mapOf("playerUuid" to player.uniqueId.toString(), "questId" to model.id, "nodeId" to node.id, "updated" to updated, "goal" to goal))
+                    questService.clearNodeProgress(player, model.id, session.branchId, node.id)
+                    node.goto?.let { handleGoto(player, model, session.branchId, it, 0, node.id) }
+                }
+                return true
+            }
+            QuestObjectNodeType.PLAYER_CITIZENS_NPC_DELIVER_ITEMS -> {
+                val bukkit = player.player ?: return true
+                deliverToNpc(bukkit, player, model, session.branchId, node)
+                return true
+            }
+            QuestObjectNodeType.PLAYER_CITIZENS_NPC_DIALOG -> {
+                val bukkit = player.player ?: return true
+                handleNpcDialogClick(bukkit, player, model, session.branchId, node, npcId)
+                return true
+            }
+            else -> return false
+        }
+    }
+
+    fun handleNpcKill(player: OfflinePlayer, npcId: Int, npcName: String?): Boolean {
+        DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1564", "handleNpcKill entry", mapOf("playerUuid" to player.uniqueId.toString(), "npcId" to npcId, "npcName" to (npcName ?: "null")))
+        val session = sessions[player.uniqueId] ?: run {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1565", "handleNpcKill session not found", mapOf("playerUuid" to player.uniqueId.toString()))
+            return false
+        }
+        val model = questService.questInfo(session.questId) ?: run {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1566", "handleNpcKill model not found", mapOf("playerUuid" to player.uniqueId.toString(), "questId" to session.questId))
+            return false
+        }
+        val branch = model.branches[session.branchId] ?: run {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1567", "handleNpcKill branch not found", mapOf("playerUuid" to player.uniqueId.toString(), "branchId" to session.branchId))
+            return false
+        }
+        val node = branch.objects[session.nodeId] ?: run {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1568", "handleNpcKill node not found", mapOf("playerUuid" to player.uniqueId.toString(), "nodeId" to session.nodeId))
+            return false
+        }
+        if (node.type != QuestObjectNodeType.PLAYER_CITIZENS_NPC_KILL) {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1569", "handleNpcKill wrong node type", mapOf("playerUuid" to player.uniqueId.toString(), "nodeType" to node.type.name))
+            return false
+        }
+        if (!matchesNpc(node, npcId, npcName)) {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1570", "handleNpcKill npc not matched", mapOf("playerUuid" to player.uniqueId.toString(), "npcId" to npcId, "npcName" to (npcName ?: "null"), "nodeNpcId" to (node.npcId ?: "null")))
+            return false
+        }
+
+        val goal = node.count.toDouble().coerceAtLeast(1.0)
+        val cur = questService.loadNodeProgress(player, model.id, session.branchId, node.id)
+        val updated = cur + 1.0
+        DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1576", "handleNpcKill progress", mapOf("playerUuid" to player.uniqueId.toString(), "questId" to model.id, "nodeId" to node.id, "current" to cur, "updated" to updated, "goal" to goal))
+        questService.saveNodeProgress(player, model.id, session.branchId, node.id, updated)
+        if (updated >= goal) {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1579", "handleNpcKill goal reached", mapOf("playerUuid" to player.uniqueId.toString(), "questId" to model.id, "nodeId" to node.id, "updated" to updated, "goal" to goal))
+            questService.clearNodeProgress(player, model.id, session.branchId, node.id)
+            node.goto?.let { handleGoto(player, model, session.branchId, it, 0, node.id) }
+        }
+        return true
+    }
+
+    private fun matchesNpc(node: QuestObjectNode, npcId: Int, npcName: String?): Boolean {
+        if (node.npcId != null && node.npcId != 0) {
+            return node.npcId == npcId
+        }
+        if (node.npcNames.isNotEmpty()) {
+            val actual = cleanNpcName(npcName) ?: return false
+            return node.npcNames.any { cfg -> cleanNpcNameFromConfig(cfg).equals(actual, ignoreCase = true) }
+        }
+        return true
+    }
+
+    private fun cleanNpcName(raw: String?): String? {
+        if (raw.isNullOrBlank()) return null
+        val stripped = org.bukkit.ChatColor.stripColor(raw) ?: raw
+        return stripped.trim()
+    }
+
+    private fun cleanNpcNameFromConfig(raw: String): String {
+        val colored = org.bukkit.ChatColor.translateAlternateColorCodes('&', raw)
+        val stripped = org.bukkit.ChatColor.stripColor(colored) ?: colored
+        return stripped.trim()
+    }
+
+    private fun deliverToNpc(
+        bukkitPlayer: org.bukkit.entity.Player,
+        offlinePlayer: OfflinePlayer,
+        model: QuestModel,
+        branchId: String,
+        node: QuestObjectNode
+    ) {
+        DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1606", "deliverToNpc entry", mapOf("playerUuid" to offlinePlayer.uniqueId.toString(), "questId" to model.id, "nodeId" to node.id, "npcId" to (node.npcId ?: "null")))
+        val goals = node.itemGoals
+        DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1609", "deliverToNpc goals", mapOf("playerUuid" to offlinePlayer.uniqueId.toString(), "questId" to model.id, "nodeId" to node.id, "goalsCount" to goals.size))
+        if (goals.isEmpty()) {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1610", "deliverToNpc no goals", mapOf("playerUuid" to offlinePlayer.uniqueId.toString(), "questId" to model.id, "nodeId" to node.id))
             return
         }
-        val model = questService.questInfo(session.questId) ?: return
-        val branch = model.branches[session.branchId] ?: return
-        val node = branch.objects[session.nodeId] ?: return
-        if (node.type != QuestObjectNodeType.NPC_INTERACT) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1048", "handleNpcInteract wrong type", mapOf("nodeType" to node.type.name))
+        goals.forEach { goal ->
+            val cur = questService.loadNodeProgress(offlinePlayer, model.id, branchId, node.id, goal.id)
+            val remaining = goal.goal - cur
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1612", "deliverToNpc goal check", mapOf("playerUuid" to offlinePlayer.uniqueId.toString(), "questId" to model.id, "nodeId" to node.id, "goalId" to goal.id, "current" to cur, "goal" to goal.goal, "remaining" to remaining))
+            if (remaining <= 0.0) return@forEach
+            val maxDeliver = remaining.toInt().coerceAtLeast(0)
+            if (maxDeliver <= 0) return@forEach
+            val canDeliver = countMatchingItems(bukkitPlayer, goal.items, maxDeliver)
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1616", "deliverToNpc canDeliver", mapOf("playerUuid" to offlinePlayer.uniqueId.toString(), "questId" to model.id, "nodeId" to node.id, "goalId" to goal.id, "canDeliver" to canDeliver, "maxDeliver" to maxDeliver))
+            if (canDeliver <= 0) return@forEach
+            removeMatchingItems(bukkitPlayer, goal.items, canDeliver)
+            val updated = cur + canDeliver.toDouble()
+            questService.saveNodeProgress(offlinePlayer, model.id, branchId, node.id, updated, goal.id)
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1620", "deliverToNpc delivered", mapOf("playerUuid" to offlinePlayer.uniqueId.toString(), "questId" to model.id, "nodeId" to node.id, "goalId" to goal.id, "delivered" to canDeliver, "updated" to updated))
+        }
+        val done = goals.all { g ->
+            questService.loadNodeProgress(offlinePlayer, model.id, branchId, node.id, g.id) >= g.goal
+        }
+        DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1624", "deliverToNpc all done", mapOf("playerUuid" to offlinePlayer.uniqueId.toString(), "questId" to model.id, "nodeId" to node.id, "done" to done))
+        if (done) {
+            questService.clearNodeProgress(offlinePlayer, model.id, branchId, node.id)
+            node.goto?.let { handleGoto(offlinePlayer, model, branchId, it, 0, node.id) }
+        }
+    }
+
+    private fun countMatchingItems(player: org.bukkit.entity.Player, matchers: List<ItemStackConfig>, max: Int): Int {
+        if (max <= 0) return 0
+        var found = 0
+        val stacks = player.inventory.contents.filterNotNull()
+        for (stack in stacks) {
+            val match = matchers.isEmpty() || matchers.any { cfg -> matchesItem(cfg, stack) }
+            if (!match) continue
+            found += stack.amount
+            if (found >= max) return max
+        }
+        return found
+    }
+
+    private fun removeMatchingItems(player: org.bukkit.entity.Player, matchers: List<ItemStackConfig>, amount: Int) {
+        if (amount <= 0) return
+        val inv = player.inventory
+        var remaining = amount
+        for (slot in 0 until inv.size) {
+            if (remaining <= 0) return
+            val stack = inv.getItem(slot) ?: continue
+            val match = matchers.isEmpty() || matchers.any { cfg -> matchesItem(cfg, stack) }
+            if (!match) continue
+            val take = minOf(remaining, stack.amount)
+            if (stack.amount > take) {
+                stack.amount = stack.amount - take
+            } else {
+                inv.clear(slot)
+            }
+            remaining -= take
+        }
+    }
+
+    private fun handleNpcDialogClick(
+        bukkitPlayer: org.bukkit.entity.Player,
+        offlinePlayer: OfflinePlayer,
+        model: QuestModel,
+        branchId: String,
+        node: QuestObjectNode,
+        npcId: Int
+    ) {
+        DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1668", "handleNpcDialogClick entry", mapOf("playerUuid" to offlinePlayer.uniqueId.toString(), "questId" to model.id, "nodeId" to node.id, "npcId" to npcId))
+        val session = sessions[offlinePlayer.uniqueId] ?: run {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1676", "handleNpcDialogClick session not found", mapOf("playerUuid" to offlinePlayer.uniqueId.toString()))
             return
         }
-        if (node.npcId != null && node.npcId != 0 && node.npcId != npcId) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1049", "handleNpcInteract npcId mismatch", mapOf("expectedNpcId" to node.npcId, "actualNpcId" to npcId))
+        val messages = node.message
+        DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1677", "handleNpcDialogClick messages", mapOf("playerUuid" to offlinePlayer.uniqueId.toString(), "questId" to model.id, "nodeId" to node.id, "messagesCount" to messages.size))
+        if (messages.isEmpty()) {
+            questService.clearNodeProgress(offlinePlayer, model.id, branchId, node.id)
+            cancelNpcDialogTasks(session, node.id)
+            node.goto?.let { handleGoto(offlinePlayer, model, branchId, it, 0, node.id) }
             return
         }
-        if (!isClickAllowed(node.clickTypes, "RIGHT_CLICK")) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1050", "handleNpcInteract click not allowed", mapOf("clickTypes" to node.clickTypes.toString()))
+
+        session.npcDialogLastAt[node.id] = System.currentTimeMillis()
+        session.npcDialogNpcId[node.id] = npcId
+        scheduleNpcDialogResets(bukkitPlayer, offlinePlayer, model, branchId, node, npcId)
+
+        val cur = questService.loadNodeProgress(offlinePlayer, model.id, branchId, node.id)
+        val idx = cur.toInt().coerceAtLeast(0)
+        DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1684", "handleNpcDialogClick progress", mapOf("playerUuid" to offlinePlayer.uniqueId.toString(), "questId" to model.id, "nodeId" to node.id, "current" to cur, "idx" to idx, "messagesSize" to messages.size))
+        if (idx >= messages.size) {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1685", "handleNpcDialogClick completed", mapOf("playerUuid" to offlinePlayer.uniqueId.toString(), "questId" to model.id, "nodeId" to node.id))
+            questService.clearNodeProgress(offlinePlayer, model.id, branchId, node.id)
+            cancelNpcDialogTasks(session, node.id)
+            node.goto?.let { handleGoto(offlinePlayer, model, branchId, it, 0, node.id) }
             return
         }
-        val gotoRaw = node.goto ?: return
-        val target = normalizeTarget(gotoRaw)
-        net.nemoria.quest.core.DebugLog.log("NPC match quest=${model.id} node=${node.id} npc=$npcId -> $target")
-        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1054", "handleNpcInteract running node", mapOf("questId" to model.id, "nodeId" to node.id, "target" to target))
-        runNode(player, model, session.branchId, target, 0)
+
+        DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1691", "handleNpcDialogClick sending message", mapOf("playerUuid" to offlinePlayer.uniqueId.toString(), "questId" to model.id, "nodeId" to node.id, "messageIdx" to idx))
+        MessageFormatter.send(bukkitPlayer, renderRaw(messages[idx], model, offlinePlayer))
+        val next = idx + 1
+        if (next >= messages.size) {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1694", "handleNpcDialogClick all messages sent", mapOf("playerUuid" to offlinePlayer.uniqueId.toString(), "questId" to model.id, "nodeId" to node.id))
+            questService.clearNodeProgress(offlinePlayer, model.id, branchId, node.id)
+            cancelNpcDialogTasks(session, node.id)
+            node.goto?.let { handleGoto(offlinePlayer, model, branchId, it, 0, node.id) }
+            return
+        }
+        questService.saveNodeProgress(offlinePlayer, model.id, branchId, node.id, next.toDouble())
+        DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1700", "handleNpcDialogClick saved progress", mapOf("playerUuid" to offlinePlayer.uniqueId.toString(), "questId" to model.id, "nodeId" to node.id, "next" to next))
+    }
+
+    private fun scheduleNpcDialogResets(
+        bukkitPlayer: org.bukkit.entity.Player,
+        offlinePlayer: OfflinePlayer,
+        model: QuestModel,
+        branchId: String,
+        node: QuestObjectNode,
+        npcId: Int
+    ) {
+        val session = sessions[offlinePlayer.uniqueId] ?: return
+
+        node.resetDelayTicks?.let { delayTicks ->
+            val key = "npc_dialog_delay:${node.id}"
+            session.waitTasks.remove(key)?.cancel()
+            val task = object : BukkitRunnable() {
+                override fun run() {
+                    val sess = sessions[offlinePlayer.uniqueId] ?: return
+                    if (sess.nodeId != node.id) return
+                    val lastAt = sess.npcDialogLastAt[node.id] ?: return
+                    val now = System.currentTimeMillis()
+                    val delayMs = delayTicks * 50L
+                    if (now - lastAt < delayMs) return
+                    resetNpcDialog(bukkitPlayer, offlinePlayer, model, branchId, node)
+                }
+            }.runTaskLater(plugin, delayTicks)
+            session.waitTasks[key] = task
+        }
+
+        node.resetDistance?.let { dist ->
+            val key = "npc_dialog_dist:${node.id}"
+            if (session.waitTasks.containsKey(key)) return@let
+            val distSq = dist * dist
+            val task = object : BukkitRunnable() {
+                override fun run() {
+                    val sess = sessions[offlinePlayer.uniqueId]
+                    if (sess == null || sess.nodeId != node.id) {
+                        cancel()
+                        sess?.waitTasks?.remove(key)
+                        return
+                    }
+                    val npcEntity = citizensNpcEntityById(npcId) ?: return
+                    if (npcEntity.world != bukkitPlayer.world) return
+                    if (bukkitPlayer.location.distanceSquared(npcEntity.location) > distSq) {
+                        resetNpcDialog(bukkitPlayer, offlinePlayer, model, branchId, node)
+                        cancel()
+                        sess.waitTasks.remove(key)
+                    }
+                }
+            }.runTaskTimer(plugin, 10L, 10L)
+            session.waitTasks[key] = task
+        }
+    }
+
+    private fun resetNpcDialog(
+        bukkitPlayer: org.bukkit.entity.Player,
+        offlinePlayer: OfflinePlayer,
+        model: QuestModel,
+        branchId: String,
+        node: QuestObjectNode
+    ) {
+        val session = sessions[offlinePlayer.uniqueId] ?: return
+        questService.clearNodeProgress(offlinePlayer, model.id, branchId, node.id)
+        cancelNpcDialogTasks(session, node.id)
+        node.resetNotify?.let { notify ->
+            notify.message.forEach { msg -> MessageFormatter.send(bukkitPlayer, renderRaw(msg, model, offlinePlayer)) }
+            notify.sound?.let { snd ->
+                runCatching { Sound.valueOf(snd.uppercase()) }.onSuccess { bukkitPlayer.playSound(bukkitPlayer.location, it, 1f, 1f) }
+            }
+        }
+        node.resetGoto?.let { handleGoto(offlinePlayer, model, branchId, it, 0, node.id) }
+    }
+
+    private fun cancelNpcDialogTasks(session: BranchSession, nodeId: String) {
+        listOf("npc_dialog_delay:$nodeId", "npc_dialog_dist:$nodeId").forEach { key ->
+            session.waitTasks.remove(key)?.cancel()
+        }
+        session.npcDialogLastAt.remove(nodeId)
+        session.npcDialogNpcId.remove(nodeId)
     }
 
     fun handleDivergeChoice(player: OfflinePlayer, choiceIndex: Int) {
@@ -3290,13 +3803,18 @@ class BranchRuntimeManager(
 
     private fun isClickAllowed(clickTypes: List<String>, attempted: String): Boolean {
         DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:3887", "isClickAllowed entry", mapOf("clickTypes" to clickTypes, "attempted" to attempted))
+        val attemptedNorm = attempted.uppercase()
         if (clickTypes.isEmpty()) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:3888", "isClickAllowed empty clickTypes, allowing", mapOf())
-            return true
+            val result = attemptedNorm.contains("RIGHT")
+            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:3888", "isClickAllowed empty clickTypes (default RIGHT_CLICK)", mapOf("attempted" to attemptedNorm, "result" to result))
+            return result
         }
         val result = clickTypes.any { ct ->
             val normalized = ct.uppercase()
-            normalized == "ANY" || normalized == attempted.uppercase() || normalized.contains("RIGHT")
+            normalized == "ANY" ||
+                (normalized.contains("RIGHT") && attemptedNorm.contains("RIGHT")) ||
+                (normalized.contains("LEFT") && attemptedNorm.contains("LEFT")) ||
+                normalized == attemptedNorm
         }
         DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:3892", "isClickAllowed result", mapOf("clickTypes" to clickTypes, "attempted" to attempted, "result" to result))
         return result
@@ -3319,6 +3837,8 @@ class BranchRuntimeManager(
         val movementProgress: MutableMap<String, Double> = mutableMapOf(),
         val physicalProgress: MutableMap<String, Double> = mutableMapOf(),
         val miscProgress: MutableMap<String, Double> = mutableMapOf(),
+        val npcDialogLastAt: MutableMap<String, Long> = mutableMapOf(),
+        val npcDialogNpcId: MutableMap<String, Int> = mutableMapOf(),
         val waitTasks: MutableMap<String, org.bukkit.scheduler.BukkitTask> = mutableMapOf(),
         val positionActionbarHint: MutableMap<String, Long> = mutableMapOf(),
         val transientTasks: MutableSet<org.bukkit.scheduler.BukkitTask> = mutableSetOf()

@@ -1,6 +1,7 @@
 package net.nemoria.quest.listener
 
 import net.nemoria.quest.core.Services
+import net.nemoria.quest.core.DebugLog
 import net.nemoria.quest.runtime.BranchRuntimeManager.EntityEventType
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
@@ -59,6 +60,10 @@ class PlayerEntityListener : Listener {
         val victimPlayer = event.entity as? Player
         if (damagerPlayer != null) {
             Services.questService.handlePlayerEntityEvent(damagerPlayer, EntityEventType.DAMAGE, event.entity)
+            val npcInfo = resolveNpcInfo(event.entity)
+            if (npcInfo != null) {
+                Services.questService.branchRuntimeHandleNpc(damagerPlayer, npcInfo.first, npcInfo.second, "LEFT_CLICK")
+            }
         }
         if (victimPlayer != null) {
             Services.questService.handlePlayerEntityEvent(victimPlayer, EntityEventType.GET_DAMAGED, event.entity, damager = event.damager)
@@ -70,6 +75,10 @@ class PlayerEntityListener : Listener {
         val killer = event.entity.killer
         if (killer != null) {
             Services.questService.handlePlayerEntityEvent(killer, EntityEventType.KILL, event.entity)
+            val npcInfo = resolveNpcInfo(event.entity)
+            if (npcInfo != null) {
+                Services.questService.branchRuntimeHandleNpcKill(killer, npcInfo.first, npcInfo.second)
+            }
         }
         val players = event.entity.world.players
         players.forEach { p ->
@@ -162,5 +171,22 @@ class PlayerEntityListener : Listener {
 
     private fun purgeFeedTracker(now: Long = System.currentTimeMillis()) {
         feedTracker.entries.removeIf { now - it.value.second > feedTtlMs }
+    }
+
+    private fun resolveNpcInfo(entity: org.bukkit.entity.Entity): Pair<Int, String?>? {
+        return runCatching {
+            val clazz = Class.forName("net.citizensnpcs.api.CitizensAPI")
+            val regMethod = clazz.getMethod("getNPCRegistry")
+            val registry = regMethod.invoke(null)
+            val getNpc = registry.javaClass.getMethod("getNPC", org.bukkit.entity.Entity::class.java)
+            val npc = getNpc.invoke(registry, entity) ?: return null
+            val id = runCatching { npc.javaClass.getMethod("getId").invoke(npc) as? Int }.getOrNull() ?: return null
+            val name = runCatching { npc.javaClass.getMethod("getName").invoke(npc) as? String }.getOrNull()
+            id to name
+        }.onFailure { ex ->
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "PlayerEntityListener.kt:175", "resolveNpcInfo error", mapOf("entityType" to entity.type.name, "errorType" to ex.javaClass.simpleName, "errorMessage" to (ex.message?.take(100) ?: "null")))
+        }.onSuccess { pair ->
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "PlayerEntityListener.kt:184", "resolveNpcInfo success", mapOf("entityType" to entity.type.name, "npcId" to pair.first, "npcName" to (pair.second ?: "null")))
+        }.getOrNull()
     }
 }

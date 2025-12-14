@@ -93,6 +93,12 @@ class QuestListeners : Listener {
             val nodeType = branchId?.let { bid -> nodeId?.let { nid -> model.branches[bid]?.objects?.get(nid)?.type } }
             val resumableTypes = setOf(
                 net.nemoria.quest.quest.QuestObjectNodeType.NPC_INTERACT,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_CITIZENS_NPC_DELIVER_ITEMS,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_CITIZENS_NPC_DIALOG,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_CITIZENS_NPC_INTERACT,
+                net.nemoria.quest.quest.QuestObjectNodeType.PLAYER_CITIZENS_NPC_KILL,
+                net.nemoria.quest.quest.QuestObjectNodeType.SERVER_CITIZENS_NPC_NAVIGATE,
+                net.nemoria.quest.quest.QuestObjectNodeType.SERVER_CITIZENS_NPC_TELEPORT,
                 net.nemoria.quest.quest.QuestObjectNodeType.DIVERGE_CHAT,
                 net.nemoria.quest.quest.QuestObjectNodeType.DIVERGE_GUI,
                 net.nemoria.quest.quest.QuestObjectNodeType.DIVERGE_OBJECTS,

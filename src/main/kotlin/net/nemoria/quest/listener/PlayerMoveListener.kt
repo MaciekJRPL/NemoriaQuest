@@ -19,6 +19,7 @@ class PlayerMoveListener : Listener {
         val from = event.from
         val to = event.to ?: return
         if (from.toVector() == to.toVector()) return
+        Services.questService.handleCitizensNpcActivatorMove(player, from, to)
         val delta = from.distance(to)
 
         val inVehicle = player.vehicle != null

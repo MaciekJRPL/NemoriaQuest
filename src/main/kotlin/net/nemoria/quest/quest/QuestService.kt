@@ -17,6 +17,11 @@ import net.nemoria.quest.runtime.BranchRuntimeManager
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import net.nemoria.quest.data.user.GroupProgress
+import net.nemoria.quest.content.ActivatorContentLoader
+import java.io.File
+import org.bukkit.Location
+import org.bukkit.entity.Entity
+import java.lang.reflect.Method
 
 class QuestService(
     private val plugin: JavaPlugin,
@@ -33,6 +38,48 @@ class QuestService(
     private val cacheTtlMs = 5 * 60 * 1000L
     private val flushIntervalTicks = 20L
     private val questVarsCache: MutableMap<String, Map<String, String>> = ConcurrentHashMap()
+    private var citizensNpcActivatorIndex: Map<Int, List<String>> = emptyMap()
+    private val citizensActivatorParticlesRange = 24.0
+    private data class CitizensNpcActivatorConfig(
+        val questIds: List<String>,
+        val dialog: List<String>,
+        val autoStartDistance: Double?,
+        val resetDelaySeconds: Long?,
+        val resetDistance: Double?,
+        val resetNotify: NotifySettings?,
+        val particlesAvailableScript: String?,
+        val particlesProgressScript: String?,
+        val particlesVerticalOffset: Double,
+        val sneakClickCancel: Boolean,
+        val requiredGuiQuests: Int?
+    )
+
+    private data class ActivatorDialogState(var idx: Int, var lastAtMs: Long)
+
+    private var citizensNpcActivatorConfig: Map<Int, CitizensNpcActivatorConfig> = emptyMap()
+    private var citizensNpcAutoStartIds: Set<Int> = emptySet()
+    private var citizensNpcParticlesIds: Set<Int> = emptySet()
+    private var citizensNpcProximityIds: Set<Int> = emptySet()
+    private var citizensNpcMoveQueryRadius: Double = 0.0
+    private var citizensNpcAutoStartQueryRadius: Double = 0.0
+    private var citizensNpcProximityQueryRadius: Double = 0.0
+    private var citizensNpcIndexedIds: List<Int> = emptyList()
+    private val activatorDialogStates: MutableMap<UUID, MutableMap<Int, ActivatorDialogState>> = ConcurrentHashMap()
+    private val activatorDialogResetTasks: MutableMap<UUID, MutableMap<Int, BukkitTask>> = ConcurrentHashMap()
+    private val lastActivatorMoveCheckAtMs: MutableMap<UUID, Long> = ConcurrentHashMap()
+    private val lastActivatorMoveBlockKey: MutableMap<UUID, Long> = ConcurrentHashMap()
+    private val lastActivatorParticleAtMs: MutableMap<UUID, MutableMap<Int, Long>> = ConcurrentHashMap()
+    private val lastActivatorParticleStatus: MutableMap<UUID, MutableMap<Int, String>> = ConcurrentHashMap()
+
+    private var citizensRegistry: Any? = null
+    private var citizensGetByIdMethod: Method? = null
+    private var citizensNpcGetEntityMethod: Method? = null
+
+    private val citizensNpcEntityUuidById: MutableMap<Int, UUID> = ConcurrentHashMap()
+    private val citizensNpcChunkById: MutableMap<Int, Pair<String, Long>> = ConcurrentHashMap()
+    private val citizensNpcIdsByWorldChunk: MutableMap<String, MutableMap<Long, MutableSet<Int>>> = ConcurrentHashMap()
+    private var citizensNpcIndexTask: BukkitTask? = null
+    private var citizensNpcIndexCursor: Int = 0
 
     init {
         startFlushTask()
@@ -56,6 +103,7 @@ class QuestService(
     }
 
     private fun data(player: OfflinePlayer): net.nemoria.quest.data.user.UserData = cached(player.uniqueId).data
+    private fun data(player: Player): net.nemoria.quest.data.user.UserData = cached(player.uniqueId).data
 
     internal fun preload(player: OfflinePlayer) {
         cached(player.uniqueId)
@@ -87,6 +135,432 @@ class QuestService(
         branchRuntime.shutdown()
         userCache.clear()
         questVarsCache.clear()
+        citizensNpcActivatorIndex = emptyMap()
+        citizensNpcActivatorConfig = emptyMap()
+        citizensNpcAutoStartIds = emptySet()
+        citizensNpcParticlesIds = emptySet()
+        citizensNpcProximityIds = emptySet()
+        citizensNpcMoveQueryRadius = 0.0
+        citizensNpcAutoStartQueryRadius = 0.0
+        citizensNpcProximityQueryRadius = 0.0
+        citizensNpcIndexedIds = emptyList()
+        activatorDialogStates.clear()
+        activatorDialogResetTasks.values.forEach { it.values.forEach { task -> task.cancel() } }
+        activatorDialogResetTasks.clear()
+        lastActivatorMoveCheckAtMs.clear()
+        lastActivatorMoveBlockKey.clear()
+        lastActivatorParticleAtMs.clear()
+        lastActivatorParticleStatus.clear()
+        citizensRegistry = null
+        citizensGetByIdMethod = null
+        citizensNpcGetEntityMethod = null
+        citizensNpcEntityUuidById.clear()
+        citizensNpcChunkById.clear()
+        citizensNpcIdsByWorldChunk.clear()
+        citizensNpcIndexTask?.cancel()
+        citizensNpcIndexTask = null
+    }
+
+    fun reloadCitizensNpcActivators() {
+        val activatorsDir = File(plugin.dataFolder, "content/activators")
+        val activatorSpecs = ActivatorContentLoader.loadCitizensNpcActivatorSpecs(activatorsDir)
+        if (activatorSpecs.isEmpty()) {
+            citizensNpcActivatorIndex = emptyMap()
+            citizensNpcActivatorConfig = emptyMap()
+            citizensNpcAutoStartIds = emptySet()
+            citizensNpcParticlesIds = emptySet()
+            citizensNpcProximityIds = emptySet()
+            citizensNpcMoveQueryRadius = 0.0
+            citizensNpcAutoStartQueryRadius = 0.0
+            citizensNpcProximityQueryRadius = 0.0
+            citizensNpcIndexedIds = emptyList()
+            citizensNpcEntityUuidById.clear()
+            citizensNpcChunkById.clear()
+            citizensNpcIdsByWorldChunk.clear()
+            citizensNpcIndexTask?.cancel()
+            citizensNpcIndexTask = null
+            return
+        }
+
+        val index = mutableMapOf<Int, MutableList<String>>()
+        val specByNpc = mutableMapOf<Int, ActivatorContentLoader.CitizensNpcActivatorSpec>()
+        val models = questRepo.findAll()
+        val priorities = models.associate { it.id to (it.displayPriority ?: Int.MAX_VALUE) }
+        val modelsById = models.associateBy { it.id }
+        models.forEach { model ->
+            model.activators.forEach { activatorId ->
+                val spec = activatorSpecs[activatorId] ?: return@forEach
+                spec.npcs.forEach { npcId ->
+                    index.computeIfAbsent(npcId) { mutableListOf() }.add(model.id)
+                    specByNpc.putIfAbsent(npcId, spec)
+                }
+            }
+        }
+        val npcToQuestIds = index.mapValues { (_, v) ->
+            v.distinct().sortedWith(compareBy<String> { priorities[it] ?: Int.MAX_VALUE }.thenBy { it })
+        }
+        citizensNpcActivatorIndex = npcToQuestIds
+
+        citizensNpcActivatorConfig = npcToQuestIds.mapValues { (npcId, questIds) ->
+            val primary = questIds.firstOrNull()?.let { modelsById[it] }
+            val spec = specByNpc[npcId]
+            CitizensNpcActivatorConfig(
+                questIds = questIds,
+                dialog = primary?.activatorsDialog ?: emptyList(),
+                autoStartDistance = primary?.activatorsDialogAutoStartDistance,
+                resetDelaySeconds = primary?.activatorsDialogResetDelaySeconds,
+                resetDistance = primary?.activatorsDialogResetDistance,
+                resetNotify = primary?.activatorsDialogResetNotify,
+                particlesAvailableScript = spec?.particles?.get("AVAILABLE"),
+                particlesProgressScript = spec?.particles?.get("PROGRESS"),
+                particlesVerticalOffset = spec?.particlesVerticalOffset ?: 0.0,
+                sneakClickCancel = spec?.sneakClickCancel ?: false,
+                requiredGuiQuests = spec?.requiredGuiQuests
+            )
+        }
+
+        citizensNpcAutoStartIds = citizensNpcActivatorConfig
+            .filter { (_, cfg) -> cfg.autoStartDistance != null && cfg.dialog.isNotEmpty() }
+            .keys
+        citizensNpcParticlesIds = citizensNpcActivatorConfig
+            .filter { (_, cfg) -> !cfg.particlesAvailableScript.isNullOrBlank() || !cfg.particlesProgressScript.isNullOrBlank() }
+            .keys
+        citizensNpcProximityIds = (citizensNpcAutoStartIds + citizensNpcParticlesIds)
+        val maxAutoStart = citizensNpcActivatorConfig.values.maxOfOrNull { it.autoStartDistance ?: 0.0 } ?: 0.0
+        val maxResetDist = citizensNpcActivatorConfig.values.maxOfOrNull { it.resetDistance ?: 0.0 } ?: 0.0
+        val particlesRange = if (citizensNpcParticlesIds.isNotEmpty()) citizensActivatorParticlesRange else 0.0
+        citizensNpcMoveQueryRadius = maxOf(maxAutoStart, maxResetDist, particlesRange)
+        citizensNpcAutoStartQueryRadius = maxAutoStart
+        citizensNpcProximityQueryRadius = maxOf(maxAutoStart, citizensActivatorParticlesRange)
+        citizensNpcIndexedIds = citizensNpcActivatorConfig
+            .filter { (_, cfg) ->
+                cfg.autoStartDistance != null ||
+                    cfg.resetDistance != null ||
+                    !cfg.particlesAvailableScript.isNullOrBlank() ||
+                    !cfg.particlesProgressScript.isNullOrBlank()
+            }
+            .keys
+            .sorted()
+
+        startCitizensNpcIndexTask()
+    }
+
+    fun handleCitizensNpcActivator(player: Player, npcId: Int) {
+        val cfg = citizensNpcActivatorConfig[npcId] ?: run {
+            val questIds = citizensNpcActivatorIndex[npcId].orEmpty()
+            if (questIds.isEmpty()) return
+            CitizensNpcActivatorConfig(
+                questIds = questIds,
+                dialog = emptyList(),
+                autoStartDistance = null,
+                resetDelaySeconds = null,
+                resetDistance = null,
+                resetNotify = null,
+                particlesAvailableScript = null,
+                particlesProgressScript = null,
+                particlesVerticalOffset = 0.0,
+                sneakClickCancel = false,
+                requiredGuiQuests = null
+            )
+        }
+
+        if (cfg.sneakClickCancel && player.isSneaking) {
+            return
+        }
+
+        if (cfg.dialog.isEmpty()) {
+            openActivatorGuiIfAllowed(player, cfg)
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        val byNpc = activatorDialogStates.computeIfAbsent(player.uniqueId) { ConcurrentHashMap() }
+        val state = byNpc[npcId]
+
+        if (state != null && shouldResetActivatorDialog(player, npcId, cfg, state, now)) {
+            byNpc.remove(npcId)
+            cfg.resetNotify?.let { sendNotifySimple(player, it) }
+        }
+
+        val current = byNpc.computeIfAbsent(npcId) { ActivatorDialogState(idx = 0, lastAtMs = now) }
+        if (current.idx >= cfg.dialog.size) {
+            byNpc.remove(npcId)
+            cancelActivatorDialogReset(player.uniqueId, npcId)
+            openActivatorGuiIfAllowed(player, cfg)
+            return
+        }
+
+        val line = cfg.dialog.getOrNull(current.idx) ?: run {
+            current.idx = cfg.dialog.size
+            current.lastAtMs = now
+            return
+        }
+        current.idx += 1
+        current.lastAtMs = now
+        scheduleActivatorDialogReset(player.uniqueId, npcId, cfg, current.lastAtMs)
+        if (line.isBlank()) return
+        MessageFormatter.send(player, line)
+    }
+
+    private fun sendNotifySimple(player: Player, notify: NotifySettings) {
+        notify.message.forEach { MessageFormatter.send(player, it) }
+        notify.sound?.let { s ->
+            runCatching { org.bukkit.Sound.valueOf(s.uppercase()) }.onSuccess { snd ->
+                player.playSound(player.location, snd, 1f, 1f)
+            }
+        }
+    }
+
+    private fun shouldResetActivatorDialog(
+        player: Player,
+        npcId: Int,
+        cfg: CitizensNpcActivatorConfig,
+        state: ActivatorDialogState,
+        nowMs: Long
+    ): Boolean {
+        val delay = cfg.resetDelaySeconds
+        return delay != null && nowMs - state.lastAtMs >= delay * 1000L
+    }
+
+    fun handleCitizensNpcActivatorMove(player: Player, from: Location, to: Location) {
+        if (citizensNpcMoveQueryRadius <= 0.0) return
+        if (plugin.server.pluginManager.getPlugin("Citizens") == null) return
+        if (citizensNpcProximityIds.isEmpty() && activatorDialogStates[player.uniqueId].isNullOrEmpty()) return
+
+        val blockKey = (((to.blockX.toLong() and 0x3FFFFFF) shl 38) or ((to.blockZ.toLong() and 0x3FFFFFF) shl 12) or (to.blockY.toLong() and 0xFFF))
+        if (lastActivatorMoveBlockKey[player.uniqueId] == blockKey) return
+        lastActivatorMoveBlockKey[player.uniqueId] = blockKey
+
+        val now = System.currentTimeMillis()
+        val last = lastActivatorMoveCheckAtMs[player.uniqueId] ?: 0L
+        if (now - last < 500L) return
+        lastActivatorMoveCheckAtMs[player.uniqueId] = now
+
+        val states = activatorDialogStates[player.uniqueId]
+        if (states != null && states.isNotEmpty()) {
+            val toRemove = mutableListOf<Int>()
+            states.forEach { (npcId, state) ->
+                val cfg = citizensNpcActivatorConfig[npcId] ?: return@forEach
+                val dist = cfg.resetDistance ?: return@forEach
+                val npcEntity = resolveCitizensNpcEntity(npcId)
+                if (npcEntity == null || npcEntity.world != player.world) {
+                    toRemove.add(npcId)
+                    cfg.resetNotify?.let { sendNotifySimple(player, it) }
+                    cancelActivatorDialogReset(player.uniqueId, npcId)
+                    return@forEach
+                }
+                if (player.location.distanceSquared(npcEntity.location) > dist * dist) {
+                    toRemove.add(npcId)
+                    cfg.resetNotify?.let { sendNotifySimple(player, it) }
+                    cancelActivatorDialogReset(player.uniqueId, npcId)
+                }
+            }
+            toRemove.forEach { states.remove(it) }
+        }
+
+        val hasAutoStart = citizensNpcAutoStartIds.isNotEmpty() && citizensNpcAutoStartQueryRadius > 0.0
+        val hasParticles = citizensNpcParticlesIds.isNotEmpty()
+        if (!hasAutoStart && !hasParticles) return
+        if (citizensNpcProximityQueryRadius <= 0.0) return
+
+        val perNpc = activatorDialogStates.computeIfAbsent(player.uniqueId) { ConcurrentHashMap() }
+        val worldName = player.world.name
+        val worldIndex = citizensNpcIdsByWorldChunk[worldName] ?: return
+        val chunkRadius = kotlin.math.ceil(citizensNpcProximityQueryRadius / 16.0).toInt().coerceAtLeast(1)
+        val centerChunkX = to.blockX shr 4
+        val centerChunkZ = to.blockZ shr 4
+        val playerLoc = player.location
+        val particlesRangeSq = citizensActivatorParticlesRange * citizensActivatorParticlesRange
+        val particleAt = lastActivatorParticleAtMs.computeIfAbsent(player.uniqueId) { ConcurrentHashMap() }
+        val particleStatus = lastActivatorParticleStatus.computeIfAbsent(player.uniqueId) { ConcurrentHashMap() }
+        val particleCooldownMs = 1500L
+        val dataForParticles = if (hasParticles) data(player) else null
+        for (dx in -chunkRadius..chunkRadius) {
+            for (dz in -chunkRadius..chunkRadius) {
+                val key = makeChunkKey(centerChunkX + dx, centerChunkZ + dz)
+                val ids = worldIndex[key] ?: continue
+                ids.forEach { npcId ->
+                    val cfg = citizensNpcActivatorConfig[npcId] ?: return@forEach
+                    val npcEntity = resolveCitizensNpcEntity(npcId) ?: return@forEach
+                    if (npcEntity.world != player.world) return@forEach
+                    if (!citizensNpcProximityIds.contains(npcId)) return@forEach
+                    val distSq = playerLoc.distanceSquared(npcEntity.location)
+
+                    if (hasAutoStart && citizensNpcAutoStartIds.contains(npcId) && !perNpc.containsKey(npcId)) {
+                        val dist = cfg.autoStartDistance ?: return@forEach
+                        if (distSq <= dist * dist) {
+                            val st = perNpc.computeIfAbsent(npcId) { ActivatorDialogState(idx = 0, lastAtMs = now) }
+                            if (st.idx >= cfg.dialog.size) return@forEach
+                            val line = cfg.dialog.getOrNull(st.idx) ?: return@forEach
+                            st.idx += 1
+                            st.lastAtMs = now
+                            scheduleActivatorDialogReset(player.uniqueId, npcId, cfg, st.lastAtMs)
+                            if (!line.isBlank()) MessageFormatter.send(player, line)
+                        }
+                    }
+
+                    if (hasParticles && citizensNpcParticlesIds.contains(npcId) && distSq <= particlesRangeSq) {
+                        val desiredStatus = run {
+                            val data = dataForParticles ?: return@run ""
+                            if (cfg.questIds.any { data.activeQuests.contains(it) }) return@run "PROGRESS"
+                            if (cfg.particlesAvailableScript.isNullOrBlank()) return@run ""
+                            for (questId in cfg.questIds) {
+                                val model = questRepo.findById(questId) ?: continue
+                                if (checkStartQuest(player, questId, model, data, viaCommand = false) == StartResult.SUCCESS) {
+                                    return@run "AVAILABLE"
+                                }
+                            }
+                            ""
+                        }
+                        if (desiredStatus.isNotBlank()) {
+                            val scriptId = when (desiredStatus) {
+                                "PROGRESS" -> cfg.particlesProgressScript
+                                "AVAILABLE" -> cfg.particlesAvailableScript
+                                else -> null
+                            }
+                            if (!scriptId.isNullOrBlank()) {
+                                val lastAt = particleAt[npcId] ?: 0L
+                                val lastSt = particleStatus[npcId]
+                                if (lastSt != desiredStatus || now - lastAt >= particleCooldownMs) {
+                                    val loc = npcEntity.location.clone().add(0.0, cfg.particlesVerticalOffset, 0.0)
+                                    branchRuntime.performParticleScriptAtLocation(player, scriptId, loc)
+                                    particleAt[npcId] = now
+                                    particleStatus[npcId] = desiredStatus
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun openActivatorGuiIfAllowed(player: Player, cfg: CitizensNpcActivatorConfig) {
+        val required = cfg.requiredGuiQuests ?: 0
+        if (required > 0) {
+            val data = data(player)
+            var count = 0
+            for (questId in cfg.questIds) {
+                if (data.activeQuests.contains(questId)) {
+                    count++
+                    if (count >= required) break
+                    continue
+                }
+                val model = questRepo.findById(questId) ?: continue
+                if (checkStartQuest(player, questId, model, data, viaCommand = false) == StartResult.SUCCESS) {
+                    count++
+                    if (count >= required) break
+                }
+            }
+            if (count < required) return
+        }
+        Services.guiManager.openListFiltered(player, Services.guiDefault, cfg.questIds.toSet())
+    }
+
+    private fun checkStartQuest(player: Player, questId: String, model: QuestModel, data: net.nemoria.quest.data.user.UserData, viaCommand: Boolean): StartResult {
+        if (data.activeQuests.contains(questId)) return StartResult.ALREADY_ACTIVE
+        if (model.completion.maxCompletions == 1 && data.completedQuests.contains(questId)) return StartResult.COMPLETION_LIMIT
+        if (!model.permissionStartRestriction.isNullOrBlank() && !player.hasPermission(model.permissionStartRestriction)) return StartResult.PERMISSION_FAIL
+        if (viaCommand && !model.permissionStartCommandRestriction.isNullOrBlank() && !player.hasPermission(model.permissionStartCommandRestriction)) return StartResult.PERMISSION_FAIL
+        if (!worldAllowed(model, player.world.name)) return StartResult.WORLD_RESTRICTED
+        if (isOnCooldown(player, model)) return StartResult.COOLDOWN
+        if (!requirementsMet(model, data)) return StartResult.REQUIREMENT_FAIL
+        if (!conditionsMet(model, player)) return StartResult.CONDITION_FAIL
+        if (!hasStartNode(model)) return StartResult.INVALID_BRANCH
+        return StartResult.SUCCESS
+    }
+
+    private fun scheduleActivatorDialogReset(playerId: UUID, npcId: Int, cfg: CitizensNpcActivatorConfig, lastAtMs: Long) {
+        val delaySeconds = cfg.resetDelaySeconds ?: return
+        val perPlayer = activatorDialogResetTasks.computeIfAbsent(playerId) { ConcurrentHashMap() }
+        perPlayer[npcId]?.cancel()
+        perPlayer[npcId] = plugin.server.scheduler.runTaskLater(plugin, Runnable {
+            val state = activatorDialogStates[playerId]?.get(npcId) ?: return@Runnable
+            if (state.lastAtMs != lastAtMs) return@Runnable
+            activatorDialogStates[playerId]?.remove(npcId)
+            cancelActivatorDialogReset(playerId, npcId)
+            val player = plugin.server.getPlayer(playerId) ?: return@Runnable
+            cfg.resetNotify?.let { sendNotifySimple(player, it) }
+        }, delaySeconds * 20L)
+    }
+
+    private fun cancelActivatorDialogReset(playerId: UUID, npcId: Int) {
+        val perPlayer = activatorDialogResetTasks[playerId] ?: return
+        perPlayer.remove(npcId)?.cancel()
+        if (perPlayer.isEmpty()) activatorDialogResetTasks.remove(playerId)
+    }
+
+    private fun startCitizensNpcIndexTask() {
+        citizensNpcIndexTask?.cancel()
+        citizensNpcIndexTask = null
+        if (citizensNpcIndexedIds.isEmpty()) return
+
+        citizensNpcIndexCursor = 0
+        citizensNpcIndexTask = plugin.server.scheduler.runTaskTimer(plugin, Runnable {
+            val size = citizensNpcIndexedIds.size
+            if (size == 0) return@Runnable
+            repeat(10) {
+                val idx = citizensNpcIndexCursor
+                citizensNpcIndexCursor = if (idx + 1 >= size) 0 else idx + 1
+                val npcId = citizensNpcIndexedIds[idx]
+                val entity = resolveCitizensNpcEntity(npcId)
+                if (entity == null) {
+                    removeCitizensNpcFromIndex(npcId)
+                } else {
+                    updateCitizensNpcIndex(npcId, entity)
+                }
+            }
+        }, 1L, 1L)
+    }
+
+    private fun resolveCitizensNpcEntity(npcId: Int): Entity? {
+        val cachedUuid = citizensNpcEntityUuidById[npcId]
+        if (cachedUuid != null) {
+            val e = plugin.server.getEntity(cachedUuid) as? Entity
+            if (e != null) return e
+        }
+
+        val registry = citizensRegistry ?: runCatching {
+            val api = Class.forName("net.citizensnpcs.api.CitizensAPI")
+            api.getMethod("getNPCRegistry").invoke(null)
+        }.getOrNull()?.also { citizensRegistry = it } ?: return null
+
+        val getById = citizensGetByIdMethod ?: runCatching {
+            registry.javaClass.getMethod("getById", Int::class.javaPrimitiveType)
+        }.getOrNull()?.also { citizensGetByIdMethod = it } ?: return null
+
+        val npc = runCatching { getById.invoke(registry, npcId) }.getOrNull() ?: return null
+        val getEntity = citizensNpcGetEntityMethod ?: runCatching { npc.javaClass.getMethod("getEntity") }.getOrNull()?.also { citizensNpcGetEntityMethod = it } ?: return null
+        val entity = runCatching { getEntity.invoke(npc) as? Entity }.getOrNull() ?: return null
+        citizensNpcEntityUuidById[npcId] = entity.uniqueId
+        return entity
+    }
+
+    private fun updateCitizensNpcIndex(npcId: Int, entity: Entity) {
+        val worldName = entity.world.name
+        val chunkKey = makeChunkKey(entity.location.blockX shr 4, entity.location.blockZ shr 4)
+        val newKey = worldName to chunkKey
+        val oldKey = citizensNpcChunkById.put(npcId, newKey)
+        if (oldKey != null && oldKey != newKey) {
+            val oldWorldIndex = citizensNpcIdsByWorldChunk[oldKey.first]
+            oldWorldIndex?.get(oldKey.second)?.remove(npcId)
+        }
+        val worldIndex = citizensNpcIdsByWorldChunk.computeIfAbsent(worldName) { ConcurrentHashMap() }
+        val set = worldIndex.computeIfAbsent(chunkKey) { ConcurrentHashMap.newKeySet() }
+        set.add(npcId)
+    }
+
+    private fun removeCitizensNpcFromIndex(npcId: Int) {
+        val oldKey = citizensNpcChunkById.remove(npcId)
+        if (oldKey != null) {
+            val worldIndex = citizensNpcIdsByWorldChunk[oldKey.first]
+            worldIndex?.get(oldKey.second)?.remove(npcId)
+        }
+        citizensNpcEntityUuidById.remove(npcId)
+    }
+
+    private fun makeChunkKey(chunkX: Int, chunkZ: Int): Long {
+        return (chunkX.toLong() shl 32) or (chunkZ.toLong() and 0xffffffffL)
     }
 
     private fun flushDirty(forceAll: Boolean = false) {
@@ -666,8 +1140,12 @@ class QuestService(
         }
     }
 
-    fun branchRuntimeHandleNpc(player: Player, npcId: Int) {
-        branchRuntime.handleNpcInteract(player, npcId)
+    fun branchRuntimeHandleNpc(player: Player, npcId: Int, npcName: String?, clickType: String): Boolean {
+        return branchRuntime.handleNpcInteract(player, npcId, npcName, clickType)
+    }
+
+    fun branchRuntimeHandleNpcKill(player: Player, npcId: Int, npcName: String?): Boolean {
+        return branchRuntime.handleNpcKill(player, npcId, npcName)
     }
 
     fun branchRuntimeHandleChoice(player: Player, idx: Int): Boolean {
@@ -925,7 +1403,3 @@ class QuestService(
         return true
     }
 }
-
-
-
-

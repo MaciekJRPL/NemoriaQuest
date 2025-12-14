@@ -56,6 +56,41 @@ class GuiManager {
         DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:52", "openList opened", mapOf("playerUuid" to player.uniqueId.toString(), "pageItemsCount" to pageItems.size))
     }
 
+    fun openListFiltered(player: Player, config: GuiConfig, allowedQuestIds: Set<String>, filterActive: Boolean = false, page: Int = 0) {
+        DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:54", "openListFiltered entry", mapOf("playerUuid" to player.uniqueId.toString(), "allowedCount" to allowedQuestIds.size, "filterActive" to filterActive, "page" to page, "guiType" to config.type.name))
+        val holder = ListHolder(filterActive, page, config)
+        val inv = Bukkit.createInventory(holder, config.type.size, MessageFormatter.format(config.name))
+        holder.inv = inv
+        val all = Services.questService.listQuests().filter { allowedQuestIds.contains(it.id) }
+        val userData = Services.storage.userRepo.load(player.uniqueId)
+        val activeSet = userData.activeQuests
+        val completedSet = userData.completedQuests
+        var shown = all.filter { !filterActive || activeSet.contains(it.id) }
+        val allowedStatuses = config.showStatus.map { it.uppercase() }.toSet()
+        if (allowedStatuses.isNotEmpty()) {
+            shown = shown.filter { allowedStatuses.contains(status(player, it, activeSet, completedSet).name) }
+        }
+        if (!config.orderQuests) {
+            shown = shown.shuffled()
+        }
+        if (config.sortQuestsByStatus) {
+            shown = shown.sortedBy { statusWeight(status(player, it, activeSet, completedSet)) }
+        }
+        val startIndex = page * PAGE_SIZE
+        val pageItems = shown.drop(startIndex).take(PAGE_SIZE)
+
+        fillBorder(inv)
+        pageItems.forEachIndexed { idx, model ->
+            val slot = CONTENT_SLOTS.getOrNull(idx) ?: return@forEachIndexed
+            val st = status(player, model, activeSet, completedSet)
+            val progress = userData.progress[model.id]
+            inv.setItem(slot, questItem(player, model, st, progress))
+        }
+        inv.setItem(inv.size - 5, toggleItem(filterActive))
+        player.openInventory(inv)
+        DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:86", "openListFiltered opened", mapOf("playerUuid" to player.uniqueId.toString(), "pageItemsCount" to pageItems.size))
+    }
+
     fun openDetail(player: Player, model: QuestModel) {
         DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:55", "openDetail entry", mapOf("playerUuid" to player.uniqueId.toString(), "questId" to model.id))
         val holder = DetailHolder(model.id)

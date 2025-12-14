@@ -28,11 +28,17 @@ class MysqlQuestModelRepository(private val dataSource: HikariDataSource) : Ques
         cache[id]?.let { return it }
         dataSource.connection.use { conn ->
             conn.prepareStatement(
-                "SELECT name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators, description_placeholder, information_message, display_priority, default_status_item, permission_start_restriction, permission_start_command_restriction, world_restriction, command_restriction, cooldown FROM quest_model WHERE id = ?"
+                "SELECT name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators, activators_dialog, activators_dialog_auto_start_distance, activators_dialog_reset_delay, activators_dialog_reset_distance, activators_dialog_reset_notify, description_placeholder, information_message, display_priority, default_status_item, permission_start_restriction, permission_start_command_restriction, world_restriction, command_restriction, cooldown FROM quest_model WHERE id = ?"
             ).use { ps ->
                 ps.setString(1, id)
                 ps.executeQuery().use { rs ->
                     if (rs.next()) {
+                        val activatorsDialogAutoStartDistance =
+                            rs.getDouble("activators_dialog_auto_start_distance").let { if (rs.wasNull()) null else it }
+                        val activatorsDialogResetDelaySeconds =
+                            rs.getLong("activators_dialog_reset_delay").let { if (rs.wasNull()) null else it }
+                        val activatorsDialogResetDistance =
+                            rs.getDouble("activators_dialog_reset_distance").let { if (rs.wasNull()) null else it }
                         val model = QuestModel(
                             id = id,
                             name = rs.getString("name"),
@@ -50,6 +56,11 @@ class MysqlQuestModelRepository(private val dataSource: HikariDataSource) : Ques
                             startConditions = parseStartConditions(rs.getString("start_conditions")),
                             completion = parseCompletion(rs.getString("completion")),
                             activators = parseActivators(rs.getString("activators")),
+                            activatorsDialog = parseStringList(rs.getString("activators_dialog")),
+                            activatorsDialogAutoStartDistance = activatorsDialogAutoStartDistance,
+                            activatorsDialogResetDelaySeconds = activatorsDialogResetDelaySeconds,
+                            activatorsDialogResetDistance = activatorsDialogResetDistance,
+                            activatorsDialogResetNotify = parseNotifySettings(rs.getString("activators_dialog_reset_notify")),
                             timeLimit = parseTimeLimit(rs.getString("time_limit")),
                             variables = parseVariables(rs.getString("variables")),
                             branches = parseBranches(rs.getString("branches")),
@@ -79,10 +90,16 @@ class MysqlQuestModelRepository(private val dataSource: HikariDataSource) : Ques
         val list = mutableListOf<QuestModel>()
         dataSource.connection.use { conn ->
             conn.prepareStatement(
-                "SELECT id, name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators, description_placeholder, information_message, display_priority, default_status_item, permission_start_restriction, permission_start_command_restriction, world_restriction, command_restriction, cooldown FROM quest_model"
+                "SELECT id, name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators, activators_dialog, activators_dialog_auto_start_distance, activators_dialog_reset_delay, activators_dialog_reset_distance, activators_dialog_reset_notify, description_placeholder, information_message, display_priority, default_status_item, permission_start_restriction, permission_start_command_restriction, world_restriction, command_restriction, cooldown FROM quest_model"
             ).use { ps ->
                 ps.executeQuery().use { rs ->
                     while (rs.next()) {
+                        val activatorsDialogAutoStartDistance =
+                            rs.getDouble("activators_dialog_auto_start_distance").let { if (rs.wasNull()) null else it }
+                        val activatorsDialogResetDelaySeconds =
+                            rs.getLong("activators_dialog_reset_delay").let { if (rs.wasNull()) null else it }
+                        val activatorsDialogResetDistance =
+                            rs.getDouble("activators_dialog_reset_distance").let { if (rs.wasNull()) null else it }
                         val model = QuestModel(
                             id = rs.getString("id"),
                             name = rs.getString("name"),
@@ -100,6 +117,11 @@ class MysqlQuestModelRepository(private val dataSource: HikariDataSource) : Ques
                             startConditions = parseStartConditions(rs.getString("start_conditions")),
                             completion = parseCompletion(rs.getString("completion")),
                             activators = parseActivators(rs.getString("activators")),
+                            activatorsDialog = parseStringList(rs.getString("activators_dialog")),
+                            activatorsDialogAutoStartDistance = activatorsDialogAutoStartDistance,
+                            activatorsDialogResetDelaySeconds = activatorsDialogResetDelaySeconds,
+                            activatorsDialogResetDistance = activatorsDialogResetDistance,
+                            activatorsDialogResetNotify = parseNotifySettings(rs.getString("activators_dialog_reset_notify")),
                             timeLimit = parseTimeLimit(rs.getString("time_limit")),
                             variables = parseVariables(rs.getString("variables")),
                             branches = parseBranches(rs.getString("branches")),
@@ -128,9 +150,9 @@ class MysqlQuestModelRepository(private val dataSource: HikariDataSource) : Ques
         dataSource.connection.use { conn ->
             conn.prepareStatement(
                 """
-                INSERT INTO quest_model(id, name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators, description_placeholder, information_message, display_priority, default_status_item, permission_start_restriction, permission_start_command_restriction, world_restriction, command_restriction, cooldown)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new
-                ON DUPLICATE KEY UPDATE name = new.name, description = new.description, display_name = new.display_name, description_lines = new.description_lines, progress_notify = new.progress_notify, status_items = new.status_items, requirements = new.requirements, objectives = new.objectives, rewards = new.rewards, time_limit = new.time_limit, variables = new.variables, branches = new.branches, main_branch = new.main_branch, end_objects = new.end_objects, saving = new.saving, concurrency = new.concurrency, players = new.players, start_conditions = new.start_conditions, completion = new.completion, activators = new.activators, description_placeholder = new.description_placeholder, information_message = new.information_message, display_priority = new.display_priority, default_status_item = new.default_status_item, permission_start_restriction = new.permission_start_restriction, permission_start_command_restriction = new.permission_start_command_restriction, world_restriction = new.world_restriction, command_restriction = new.command_restriction, cooldown = new.cooldown
+                INSERT INTO quest_model(id, name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators, activators_dialog, activators_dialog_auto_start_distance, activators_dialog_reset_delay, activators_dialog_reset_distance, activators_dialog_reset_notify, description_placeholder, information_message, display_priority, default_status_item, permission_start_restriction, permission_start_command_restriction, world_restriction, command_restriction, cooldown)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS new
+                ON DUPLICATE KEY UPDATE name = new.name, description = new.description, display_name = new.display_name, description_lines = new.description_lines, progress_notify = new.progress_notify, status_items = new.status_items, requirements = new.requirements, objectives = new.objectives, rewards = new.rewards, time_limit = new.time_limit, variables = new.variables, branches = new.branches, main_branch = new.main_branch, end_objects = new.end_objects, saving = new.saving, concurrency = new.concurrency, players = new.players, start_conditions = new.start_conditions, completion = new.completion, activators = new.activators, activators_dialog = new.activators_dialog, activators_dialog_auto_start_distance = new.activators_dialog_auto_start_distance, activators_dialog_reset_delay = new.activators_dialog_reset_delay, activators_dialog_reset_distance = new.activators_dialog_reset_distance, activators_dialog_reset_notify = new.activators_dialog_reset_notify, description_placeholder = new.description_placeholder, information_message = new.information_message, display_priority = new.display_priority, default_status_item = new.default_status_item, permission_start_restriction = new.permission_start_restriction, permission_start_command_restriction = new.permission_start_command_restriction, world_restriction = new.world_restriction, command_restriction = new.command_restriction, cooldown = new.cooldown
                 """.trimIndent()
             ).use { ps ->
                 bindModel(ps, model)
@@ -233,6 +255,16 @@ class MysqlQuestModelRepository(private val dataSource: HikariDataSource) : Ques
         return runCatching { gson.fromJson<List<String>>(raw, requirementsType) }.getOrDefault(emptyList())
     }
 
+    private fun parseStringList(raw: String?): List<String> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching { gson.fromJson<List<String>>(raw, requirementsType) }.getOrDefault(emptyList())
+    }
+
+    private fun parseNotifySettings(raw: String?): NotifySettings? {
+        if (raw.isNullOrBlank()) return null
+        return runCatching { gson.fromJson(raw, NotifySettings::class.java) }.getOrNull()
+    }
+
     private fun bindModel(ps: java.sql.PreparedStatement, model: QuestModel) {
         ps.setString(1, model.id)
         ps.setString(2, model.name)
@@ -255,14 +287,19 @@ class MysqlQuestModelRepository(private val dataSource: HikariDataSource) : Ques
         ps.setString(19, gson.toJson(model.startConditions))
         ps.setString(20, gson.toJson(model.completion))
         ps.setString(21, gson.toJson(model.activators))
-        ps.setString(22, model.descriptionPlaceholder)
-        ps.setString(23, model.informationMessage)
-        if (model.displayPriority != null) ps.setInt(24, model.displayPriority) else ps.setNull(24, java.sql.Types.INTEGER)
-        ps.setString(25, gson.toJson(model.defaultStatusItem))
-        ps.setString(26, model.permissionStartRestriction)
-        ps.setString(27, model.permissionStartCommandRestriction)
-        ps.setString(28, gson.toJson(model.worldRestriction))
-        ps.setString(29, gson.toJson(model.commandRestriction))
-        ps.setString(30, gson.toJson(model.cooldown))
+        ps.setString(22, gson.toJson(model.activatorsDialog))
+        if (model.activatorsDialogAutoStartDistance != null) ps.setDouble(23, model.activatorsDialogAutoStartDistance) else ps.setNull(23, java.sql.Types.DOUBLE)
+        if (model.activatorsDialogResetDelaySeconds != null) ps.setLong(24, model.activatorsDialogResetDelaySeconds) else ps.setNull(24, java.sql.Types.BIGINT)
+        if (model.activatorsDialogResetDistance != null) ps.setDouble(25, model.activatorsDialogResetDistance) else ps.setNull(25, java.sql.Types.DOUBLE)
+        ps.setString(26, gson.toJson(model.activatorsDialogResetNotify))
+        ps.setString(27, model.descriptionPlaceholder)
+        ps.setString(28, model.informationMessage)
+        if (model.displayPriority != null) ps.setInt(29, model.displayPriority) else ps.setNull(29, java.sql.Types.INTEGER)
+        ps.setString(30, gson.toJson(model.defaultStatusItem))
+        ps.setString(31, model.permissionStartRestriction)
+        ps.setString(32, model.permissionStartCommandRestriction)
+        ps.setString(33, gson.toJson(model.worldRestriction))
+        ps.setString(34, gson.toJson(model.commandRestriction))
+        ps.setString(35, gson.toJson(model.cooldown))
     }
 }

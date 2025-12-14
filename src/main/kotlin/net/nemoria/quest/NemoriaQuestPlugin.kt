@@ -92,6 +92,7 @@ class NemoriaQuestPlugin : JavaPlugin() {
         ContentBootstrap(this, Services.storage.questModelRepo).bootstrap()
         val questCount = Services.storage.questModelRepo.findAll().size
         net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:83", "onEnable content bootstrapped", mapOf("questCount" to questCount))
+        Services.questService.reloadCitizensNpcActivators()
         Services.questService.preloadParticleScripts()
         loadGuiConfigs()
         logQuestLoadSummary("log.content.action_loaded")
@@ -167,6 +168,7 @@ class NemoriaQuestPlugin : JavaPlugin() {
             net.nemoria.quest.hook.PlaceholderHook().register()
         }
         ContentBootstrap(this, Services.storage.questModelRepo).bootstrap()
+        Services.questService.reloadCitizensNpcActivators()
         Services.questService.preloadParticleScripts()
         org.bukkit.event.HandlerList.unregisterAll(this)
         resumeActiveBranches()

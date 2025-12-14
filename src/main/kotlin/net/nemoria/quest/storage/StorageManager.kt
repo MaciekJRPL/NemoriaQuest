@@ -107,6 +107,8 @@ class StorageManager(
         val textType = if (backend == BackendType.MYSQL) "TEXT" else "TEXT"
         val longTextType = if (backend == BackendType.MYSQL) "LONGTEXT" else "TEXT"
         val intType = if (backend == BackendType.MYSQL) "INT" else "INTEGER"
+        val doubleType = if (backend == BackendType.MYSQL) "DOUBLE" else "REAL"
+        val bigIntType = if (backend == BackendType.MYSQL) "BIGINT" else "INTEGER"
         conn.createStatement().use { st ->
             st.executeUpdate(
                 """
@@ -132,6 +134,11 @@ class StorageManager(
                     start_conditions $longTextType,
                     completion $longTextType,
                     activators $longTextType,
+                    activators_dialog $longTextType,
+                    activators_dialog_auto_start_distance $doubleType,
+                    activators_dialog_reset_delay $bigIntType,
+                    activators_dialog_reset_distance $doubleType,
+                    activators_dialog_reset_notify $longTextType,
                     description_placeholder $textType,
                     information_message $textType,
                     display_priority $intType,
@@ -164,6 +171,11 @@ class StorageManager(
         addColumnIfMissing(conn, "quest_model", "start_conditions", longTextType)
         addColumnIfMissing(conn, "quest_model", "completion", longTextType)
         addColumnIfMissing(conn, "quest_model", "activators", longTextType)
+        addColumnIfMissing(conn, "quest_model", "activators_dialog", longTextType)
+        addColumnIfMissing(conn, "quest_model", "activators_dialog_auto_start_distance", doubleType)
+        addColumnIfMissing(conn, "quest_model", "activators_dialog_reset_delay", bigIntType)
+        addColumnIfMissing(conn, "quest_model", "activators_dialog_reset_distance", doubleType)
+        addColumnIfMissing(conn, "quest_model", "activators_dialog_reset_notify", longTextType)
         addColumnIfMissing(conn, "quest_model", "description_placeholder", textType)
         addColumnIfMissing(conn, "quest_model", "information_message", textType)
         addColumnIfMissing(conn, "quest_model", "display_priority", intType)

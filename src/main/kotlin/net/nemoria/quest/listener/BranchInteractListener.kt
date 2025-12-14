@@ -15,9 +15,21 @@ class BranchInteractListener : Listener {
     @EventHandler
     fun onNpcInteract(event: PlayerInteractEntityEvent) {
         if (!Services.hasQuestService()) return
-        val npcId = resolveNpcId(event.rightClicked) ?: return
-        DebugLog.log("NPC interact player=${event.player.name} npcId=$npcId entity=${event.rightClicked.type}")
-        Services.questService.branchRuntimeHandleNpc(event.player, npcId)
+        DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchInteractListener.kt:16", "onNpcInteract entry", mapOf("playerUuid" to event.player.uniqueId.toString(), "entityType" to event.rightClicked.type.name))
+        val info = resolveNpcInfo(event.rightClicked) ?: run {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchInteractListener.kt:18", "onNpcInteract not Citizens NPC", mapOf("playerUuid" to event.player.uniqueId.toString(), "entityType" to event.rightClicked.type.name))
+            return
+        }
+        val npcId = info.first
+        val npcName = info.second
+        DebugLog.log("NPC interact player=${event.player.name} npcId=$npcId npcName=${npcName ?: "null"} entity=${event.rightClicked.type}")
+        DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchInteractListener.kt:22", "onNpcInteract resolved", mapOf("playerUuid" to event.player.uniqueId.toString(), "npcId" to npcId, "npcName" to (npcName ?: "null")))
+        val handled = Services.questService.branchRuntimeHandleNpc(event.player, npcId, npcName, "RIGHT_CLICK")
+        DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchInteractListener.kt:23", "onNpcInteract handled", mapOf("playerUuid" to event.player.uniqueId.toString(), "npcId" to npcId, "handled" to handled))
+        if (!handled) {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchInteractListener.kt:24", "onNpcInteract trying activator", mapOf("playerUuid" to event.player.uniqueId.toString(), "npcId" to npcId))
+            Services.questService.handleCitizensNpcActivator(event.player, npcId)
+        }
     }
 
     @EventHandler
@@ -51,19 +63,25 @@ class BranchInteractListener : Listener {
         }
     }
 
-    private fun resolveNpcId(entity: Entity): Int? {
-        val id = runCatching {
+    private fun resolveNpcInfo(entity: Entity): Pair<Int, String?>? {
+        val pair = runCatching {
             val clazz = Class.forName("net.citizensnpcs.api.CitizensAPI")
             val regMethod = clazz.getMethod("getNPCRegistry")
             val registry = regMethod.invoke(null)
             val getNpc = registry.javaClass.getMethod("getNPC", Entity::class.java)
             val npc = getNpc.invoke(registry, entity) ?: return null
             val idMethod = npc.javaClass.getMethod("getId")
-            idMethod.invoke(npc) as? Int
+            val id = idMethod.invoke(npc) as? Int ?: return null
+            val name = runCatching { npc.javaClass.getMethod("getName").invoke(npc) as? String }.getOrNull()
+            id to name
+        }.onFailure { ex ->
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchInteractListener.kt:59", "resolveNpcInfo error", mapOf("entityType" to entity.type.name, "errorType" to ex.javaClass.simpleName, "errorMessage" to (ex.message?.take(100) ?: "null")))
         }.getOrNull()
-        if (id == null) {
+        if (pair == null) {
             DebugLog.log("NPC interact entity=${entity.type} not recognized as Citizens NPC")
+        } else {
+            DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchInteractListener.kt:71", "resolveNpcInfo success", mapOf("entityType" to entity.type.name, "npcId" to pair.first, "npcName" to (pair.second ?: "null")))
         }
-        return id
+        return pair
     }
 }
