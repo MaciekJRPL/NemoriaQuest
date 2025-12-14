@@ -1,12 +1,14 @@
 package net.nemoria.quest.storage.repo
 
 import com.zaxxer.hikari.HikariDataSource
+import net.nemoria.quest.core.DebugLog
 import net.nemoria.quest.data.repo.PlayerBlockRepository
 import java.sql.Timestamp
 import java.util.UUID
 
 class SqlitePlayerBlockRepository(private val ds: HikariDataSource) : PlayerBlockRepository {
     override fun upsert(world: String, x: Int, y: Int, z: Int, owner: UUID?, timestamp: Long) {
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqlitePlayerBlockRepository.kt:9", "upsert entry", mapOf("world" to world, "x" to x, "y" to y, "z" to z, "owner" to (owner?.toString() ?: "null")))
         ds.connection.use { conn ->
             conn.prepareStatement(
                 """
@@ -21,12 +23,14 @@ class SqlitePlayerBlockRepository(private val ds: HikariDataSource) : PlayerBloc
                 ps.setInt(4, z)
                 ps.setString(5, owner?.toString())
                 ps.setTimestamp(6, Timestamp(timestamp))
-                ps.executeUpdate()
+                val rows = ps.executeUpdate()
+                DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqlitePlayerBlockRepository.kt:24", "upsert completed", mapOf("world" to world, "x" to x, "y" to y, "z" to z, "rowsAffected" to rows))
             }
         }
     }
 
     override fun remove(world: String, x: Int, y: Int, z: Int) {
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqlitePlayerBlockRepository.kt:29", "remove entry", mapOf("world" to world, "x" to x, "y" to y, "z" to z))
         ds.connection.use { conn ->
             conn.prepareStatement(
                 "DELETE FROM player_blocks WHERE world=? AND x=? AND y=? AND z=?"
@@ -35,12 +39,14 @@ class SqlitePlayerBlockRepository(private val ds: HikariDataSource) : PlayerBloc
                 ps.setInt(2, x)
                 ps.setInt(3, y)
                 ps.setInt(4, z)
-                ps.executeUpdate()
+                val rows = ps.executeUpdate()
+                DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqlitePlayerBlockRepository.kt:38", "remove completed", mapOf("world" to world, "x" to x, "y" to y, "z" to z, "rowsAffected" to rows))
             }
         }
     }
 
     override fun find(world: String, x: Int, y: Int, z: Int): PlayerBlockRepository.BlockEntry? {
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqlitePlayerBlockRepository.kt:43", "find entry", mapOf("world" to world, "x" to x, "y" to y, "z" to z))
         ds.connection.use { conn ->
             conn.prepareStatement(
                 "SELECT owner, ts FROM player_blocks WHERE world=? AND x=? AND y=? AND z=?"
@@ -54,17 +60,24 @@ class SqlitePlayerBlockRepository(private val ds: HikariDataSource) : PlayerBloc
                     val ownerStr = rs.getString("owner")
                     val owner = ownerStr?.let { runCatching { UUID.fromString(it) }.getOrNull() }
                     val ts = rs.getTimestamp("ts")?.time ?: return null
-                    return PlayerBlockRepository.BlockEntry(owner, ts)
+                    val result = PlayerBlockRepository.BlockEntry(owner, ts)
+                    DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqlitePlayerBlockRepository.kt:57", "find found", mapOf("world" to world, "x" to x, "y" to y, "z" to z, "owner" to (owner?.toString() ?: "null")))
+                    return result
                 }
             }
         }
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqlitePlayerBlockRepository.kt:61", "find not found", mapOf("world" to world, "x" to x, "y" to y, "z" to z))
+        return null
     }
 
     override fun pruneOlderThan(cutoffMillis: Long): Int {
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqlitePlayerBlockRepository.kt:63", "pruneOlderThan entry", mapOf("cutoffMillis" to cutoffMillis))
         ds.connection.use { conn ->
             conn.prepareStatement("DELETE FROM player_blocks WHERE ts < ?").use { ps ->
                 ps.setTimestamp(1, Timestamp(cutoffMillis))
-                return ps.executeUpdate()
+                val rows = ps.executeUpdate()
+                DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqlitePlayerBlockRepository.kt:68", "pruneOlderThan completed", mapOf("cutoffMillis" to cutoffMillis, "rowsDeleted" to rows))
+                return rows
             }
         }
     }

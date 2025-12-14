@@ -2,6 +2,7 @@ package net.nemoria.quest.runtime
 
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.format.NamedTextColor
+import net.nemoria.quest.core.DebugLog
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -14,7 +15,9 @@ object ChatHistoryManager {
     private val counters: MutableMap<UUID, Long> = ConcurrentHashMap()
 
     fun append(playerId: UUID, component: Component) {
-        if (consumeSkip(playerId)) return
+        if (consumeSkip(playerId)) {
+            return
+        }
         val nextSeq = counters.compute(playerId) { _, prev -> (prev ?: 0L) + 1L }!!
         val deque = history.computeIfAbsent(playerId) { ArrayDeque() }
         deque.addLast(Entry(nextSeq, component))

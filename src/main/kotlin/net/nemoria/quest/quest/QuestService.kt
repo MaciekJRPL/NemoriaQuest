@@ -47,7 +47,10 @@ class QuestService(
                 existing.lastAccess = now
                 existing
             } else {
-                CachedUser(userRepo.load(uuid), false, now)
+                DebugLog.logToFile("debug-session", "run1", "CACHE", "QuestService.kt:50", "cached miss - loading from DB", mapOf("uuid" to uuid.toString(), "cacheSize" to userCache.size))
+                val loaded = userRepo.load(uuid)
+                DebugLog.logToFile("debug-session", "run1", "CACHE", "QuestService.kt:50", "cached loaded", mapOf("uuid" to uuid.toString(), "activeQuests" to loaded.activeQuests.size, "completedQuests" to loaded.completedQuests.size, "progressCount" to loaded.progress.size))
+                CachedUser(loaded, false, now)
             }
         }!!
     }
@@ -60,8 +63,10 @@ class QuestService(
 
     private fun markDirty(player: OfflinePlayer) {
         val cu = cached(player.uniqueId)
+        val oldVersion = cu.version
         cu.dirty = true
         cu.version += 1
+        DebugLog.logToFile("debug-session", "run1", "CACHE", "QuestService.kt:61", "markDirty", mapOf("playerUuid" to player.uniqueId.toString(), "playerName" to (player.name ?: "null"), "oldVersion" to oldVersion, "newVersion" to cu.version))
     }
 
     private fun startFlushTask() {
@@ -86,7 +91,8 @@ class QuestService(
 
     private fun flushDirty(forceAll: Boolean = false) {
         val now = System.currentTimeMillis()
-        userCache.forEach { (_, cached) ->
+        var savedCount = 0
+        userCache.forEach { (uuid, cached) ->
             val versionSnapshot = cached.version
             if (forceAll || cached.dirty) {
                 val snapshot = copiedUser(cached.data)
@@ -94,8 +100,12 @@ class QuestService(
                 if (cached.version == versionSnapshot) {
                     cached.dirty = false
                     cached.lastAccess = now
+                    savedCount++
                 }
             }
+        }
+        if (forceAll || savedCount > 0) {
+            DebugLog.logToFile("debug-session", "run1", "A", "QuestService.kt:87", "flushDirty completed", mapOf("forceAll" to forceAll, "cacheSize" to userCache.size, "savedCount" to savedCount))
         }
         userCache.keys.forEach { uuid ->
             userCache.computeIfPresent(uuid) { _, current ->
@@ -106,43 +116,85 @@ class QuestService(
     }
 
     fun startQuest(player: OfflinePlayer, questId: String, viaCommand: Boolean = false): StartResult {
-        val model = questRepo.findById(questId) ?: return StartResult.NOT_FOUND
+        DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:123", "startQuest entry", mapOf("questId" to questId, "playerUuid" to player.uniqueId.toString(), "playerName" to (player.name ?: "null"), "viaCommand" to viaCommand))
+        val model = questRepo.findById(questId)
+        if (model == null) {
+            DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:124", "startQuest NOT_FOUND", mapOf("questId" to questId))
+            return StartResult.NOT_FOUND
+        }
         net.nemoria.quest.core.DebugLog.log("startQuest questId=$questId player=${player.name}")
-        val bukkitPlayer = player.player ?: return StartResult.OFFLINE
+        val bukkitPlayer = player.player
+        if (bukkitPlayer == null) {
+            DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:126", "startQuest OFFLINE", mapOf("questId" to questId, "playerUuid" to player.uniqueId.toString()))
+            return StartResult.OFFLINE
+        }
         val data = data(player)
-        if (data.activeQuests.contains(questId)) return StartResult.ALREADY_ACTIVE
-        if (model.completion.maxCompletions == 1 && data.completedQuests.contains(questId)) return StartResult.COMPLETION_LIMIT
-        if (!model.permissionStartRestriction.isNullOrBlank() && !bukkitPlayer.hasPermission(model.permissionStartRestriction)) return StartResult.PERMISSION_FAIL
-        if (viaCommand && !model.permissionStartCommandRestriction.isNullOrBlank() && !bukkitPlayer.hasPermission(model.permissionStartCommandRestriction)) return StartResult.PERMISSION_FAIL
-        if (!worldAllowed(model, bukkitPlayer.world.name)) return StartResult.WORLD_RESTRICTED
-        if (isOnCooldown(player, model)) return StartResult.COOLDOWN
-        if (!requirementsMet(model, data)) return StartResult.REQUIREMENT_FAIL
-        if (!conditionsMet(model, bukkitPlayer)) return StartResult.CONDITION_FAIL
-        if (!hasStartNode(model)) return StartResult.INVALID_BRANCH
+        if (data.activeQuests.contains(questId)) {
+            DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:128", "startQuest ALREADY_ACTIVE", mapOf("questId" to questId, "playerUuid" to player.uniqueId.toString()))
+            return StartResult.ALREADY_ACTIVE
+        }
+        if (model.completion.maxCompletions == 1 && data.completedQuests.contains(questId)) {
+            DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:129", "startQuest COMPLETION_LIMIT", mapOf("questId" to questId, "playerUuid" to player.uniqueId.toString()))
+            return StartResult.COMPLETION_LIMIT
+        }
+        if (!model.permissionStartRestriction.isNullOrBlank() && !bukkitPlayer.hasPermission(model.permissionStartRestriction)) {
+            DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:130", "startQuest PERMISSION_FAIL", mapOf("questId" to questId, "permission" to model.permissionStartRestriction))
+            return StartResult.PERMISSION_FAIL
+        }
+        if (viaCommand && !model.permissionStartCommandRestriction.isNullOrBlank() && !bukkitPlayer.hasPermission(model.permissionStartCommandRestriction)) {
+            DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:131", "startQuest PERMISSION_FAIL (command)", mapOf("questId" to questId, "permission" to model.permissionStartCommandRestriction))
+            return StartResult.PERMISSION_FAIL
+        }
+        if (!worldAllowed(model, bukkitPlayer.world.name)) {
+            DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:132", "startQuest WORLD_RESTRICTED", mapOf("questId" to questId, "world" to bukkitPlayer.world.name))
+            return StartResult.WORLD_RESTRICTED
+        }
+        if (isOnCooldown(player, model)) {
+            DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:133", "startQuest COOLDOWN", mapOf("questId" to questId, "playerUuid" to player.uniqueId.toString()))
+            return StartResult.COOLDOWN
+        }
+        if (!requirementsMet(model, data)) {
+            DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:134", "startQuest REQUIREMENT_FAIL", mapOf("questId" to questId, "requirements" to model.requirements.size))
+            return StartResult.REQUIREMENT_FAIL
+        }
+        if (!conditionsMet(model, bukkitPlayer)) {
+            DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:135", "startQuest CONDITION_FAIL", mapOf("questId" to questId))
+            return StartResult.CONDITION_FAIL
+        }
+        if (!hasStartNode(model)) {
+            DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:136", "startQuest INVALID_BRANCH", mapOf("questId" to questId, "branchesCount" to model.branches.size))
+            return StartResult.INVALID_BRANCH
+        }
         data.activeQuests.add(model.id)
         val progress = QuestProgress()
         progress.variables.putAll(model.variables)
+        DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:137", "startQuest creating progress", mapOf("questId" to questId, "objectivesCount" to model.objectives.size, "variablesCount" to model.variables.size))
         model.objectives.forEach { obj ->
             progress.objectives[obj.id] = ObjectiveState(completed = false, startedAt = System.currentTimeMillis())
             if (obj.type == QuestObjectiveType.TIMER && obj.durationSeconds != null) {
+                DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:142", "startQuest scheduling timer", mapOf("questId" to questId, "objectiveId" to obj.id, "durationSeconds" to obj.durationSeconds))
                 scheduleTimer(player, questId, obj.id, obj.durationSeconds)
             }
         }
         if (model.timeLimit != null) {
             progress.timeLimitStartedAt = System.currentTimeMillis()
+            DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:146", "startQuest timeLimit set", mapOf("questId" to questId, "timeLimitSeconds" to model.timeLimit.durationSeconds))
         }
         // set initial branch state
         if (model.branches.isNotEmpty()) {
             val branchId = model.mainBranch ?: model.branches.keys.firstOrNull()
             progress.currentBranchId = branchId
             progress.currentNodeId = branchId?.let { b -> model.branches[b]?.startsAt ?: model.branches[b]?.objects?.keys?.firstOrNull() }
+            DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:152", "startQuest branch state", mapOf("questId" to questId, "branchId" to (branchId ?: "null"), "nodeId" to (progress.currentNodeId ?: "null")))
         }
         data.progress[questId] = progress
         markDirty(player)
+        DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:157", "startQuest starting branchRuntime", mapOf("questId" to questId))
         branchRuntime.start(player, model)
         if (model.timeLimit != null) {
             scheduleQuestTimeLimit(player, model)
         }
+        DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:161", "startQuest SUCCESS", mapOf("questId" to questId, "playerUuid" to player.uniqueId.toString()))
         return StartResult.SUCCESS
     }
 
@@ -156,16 +208,19 @@ class QuestService(
     }
 
     fun stopQuest(player: OfflinePlayer, questId: String, complete: Boolean) {
+        DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:173", "stopQuest entry", mapOf("questId" to questId, "playerUuid" to player.uniqueId.toString(), "complete" to complete))
         val data = data(player)
         data.activeQuests.remove(questId)
         data.progress.remove(questId)
         if (complete) {
             data.completedQuests.add(questId)
+            DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:178", "stopQuest applying rewards", mapOf("questId" to questId))
             questRepo.findById(questId)?.let { applyRewards(player, it) }
         }
         markDirty(player)
         cancelQuestTimeLimit(player, questId)
         cancelObjectiveTimers(player, questId)
+        DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:184", "stopQuest stopping branchRuntime", mapOf("questId" to questId))
         branchRuntime.stop(player)
     }
 
@@ -246,17 +301,31 @@ class QuestService(
     }
 
     fun completeObjective(player: OfflinePlayer, questId: String, objectiveId: String) {
+        DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:263", "completeObjective entry", mapOf("questId" to questId, "objectiveId" to objectiveId, "playerUuid" to player.uniqueId.toString()))
         val data = data(player)
-        val progress = data.progress[questId] ?: return
-        val state = progress.objectives[objectiveId] ?: return
-        if (state.completed) return
+        val progress = data.progress[questId]
+        if (progress == null) {
+            DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:265", "completeObjective no progress", mapOf("questId" to questId, "objectiveId" to objectiveId))
+            return
+        }
+        val state = progress.objectives[objectiveId]
+        if (state == null) {
+            DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:266", "completeObjective no state", mapOf("questId" to questId, "objectiveId" to objectiveId))
+            return
+        }
+        if (state.completed) {
+            DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:267", "completeObjective already completed", mapOf("questId" to questId, "objectiveId" to objectiveId))
+            return
+        }
         state.completed = true
         state.completedAt = System.currentTimeMillis()
         data.progress[questId] = progress
         markDirty(player)
         cancelObjectiveTimer(player, questId, objectiveId)
         val allDone = progress.objectives.values.all { it.completed }
+        DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:273", "completeObjective completed", mapOf("questId" to questId, "objectiveId" to objectiveId, "allDone" to allDone, "totalObjectives" to progress.objectives.size))
         if (allDone) {
+            DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:275", "completeObjective finishing quest", mapOf("questId" to questId))
             finishOutcome(player, questId, "SUCCESS")
         }
     }
@@ -276,13 +345,19 @@ class QuestService(
     }
 
     private fun scheduleTimer(player: OfflinePlayer, questId: String, objectiveId: String, durationSeconds: Long) {
+        DebugLog.logToFile("debug-session", "run1", "B", "QuestService.kt:278", "scheduleTimer entry", mapOf("playerUuid" to player.uniqueId.toString(), "questId" to questId, "objectiveId" to objectiveId, "durationSeconds" to durationSeconds))
         val task = object : BukkitRunnable() {
             override fun run() {
+                DebugLog.logToFile("debug-session", "run1", "B", "QuestService.kt:281", "scheduleTimer task run", mapOf("playerUuid" to player.uniqueId.toString(), "questId" to questId, "objectiveId" to objectiveId))
                 completeObjective(player, questId, objectiveId)
             }
         }.runTaskLater(plugin, durationSeconds * 20)
+        val existingTask = objectiveTimers[player.uniqueId]?.get(questId)?.get(objectiveId)
+        DebugLog.logToFile("debug-session", "run1", "B", "QuestService.kt:285", "scheduleTimer before computeIfAbsent", mapOf("playerUuid" to player.uniqueId.toString(), "hasExistingTask" to (existingTask != null)))
         objectiveTimers.computeIfAbsent(player.uniqueId) { ConcurrentHashMap() }
             .computeIfAbsent(questId) { ConcurrentHashMap() }[objectiveId]?.cancel()
+        val mapAfter = objectiveTimers[player.uniqueId]?.get(questId)
+        DebugLog.logToFile("debug-session", "run1", "B", "QuestService.kt:286", "scheduleTimer after computeIfAbsent", mapOf("playerUuid" to player.uniqueId.toString(), "mapExists" to (mapAfter != null)))
         objectiveTimers[player.uniqueId]?.get(questId)?.put(objectiveId, task)
     }
 
@@ -479,17 +554,18 @@ class QuestService(
 
     private fun applyRewards(player: OfflinePlayer, model: QuestModel) {
         val rewards = model.rewards
-        val name = player.name ?: return
+        if (player.name == null) return
         rewards.commands.forEach { cmd ->
             plugin.server.dispatchCommand(plugin.server.consoleSender, formatCommand(cmd, player))
         }
-        // TODO: points/variables systems to implement; placeholders for now
     }
 
     internal fun finishOutcome(player: OfflinePlayer, questId: String, outcome: String) {
+        DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:648", "finishOutcome entry", mapOf("questId" to questId, "outcome" to outcome, "playerUuid" to player.uniqueId.toString()))
         val model = questRepo.findById(questId)
         if (model != null) {
             val end = model.endObjects[outcome] ?: emptyList()
+            DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:651", "finishOutcome processing", mapOf("questId" to questId, "outcome" to outcome, "endObjectsCount" to end.size))
             end.forEach { eo ->
                 when (eo.type) {
                     QuestEndObjectType.SERVER_ACTIONS -> {
@@ -618,6 +694,7 @@ class QuestService(
         spawnerType: String? = null,
         treeType: String? = null
     ) {
+        DebugLog.logToFile("debug-session", "run1", "EVENT", "QuestService.kt:640", "handlePlayerBlockEvent", mapOf("playerUuid" to player.uniqueId.toString(), "kind" to kind.name, "blockType" to block.type.name, "world" to block.world.name, "x" to block.x, "y" to block.y, "z" to block.z, "action" to (action ?: "null"), "placedByPlayer" to placedByPlayer))
         branchRuntime.handlePlayerBlockEvent(
             player,
             kind,
@@ -637,6 +714,7 @@ class QuestService(
         damager: org.bukkit.entity.Entity? = null,
         entityTypeHint: String? = null
     ) {
+        DebugLog.logToFile("debug-session", "run1", "EVENT", "QuestService.kt:662", "handlePlayerEntityEvent", mapOf("playerUuid" to player.uniqueId.toString(), "kind" to kind.name, "entityType" to (entity?.type?.name ?: "null"), "damagerType" to (damager?.type?.name ?: "null"), "entityTypeHint" to (entityTypeHint ?: "null")))
         branchRuntime.handlePlayerEntityEvent(player, kind, entity, damager, entityTypeHint)
     }
 
@@ -648,6 +726,7 @@ class QuestService(
         slot: Int? = null,
         villagerId: java.util.UUID? = null
     ) {
+        DebugLog.logToFile("debug-session", "run1", "EVENT", "QuestService.kt:672", "handlePlayerItemEvent", mapOf("playerUuid" to player.uniqueId.toString(), "kind" to kind.name, "itemType" to (item?.type?.name ?: "null"), "itemAmount" to (item?.amount ?: 0), "inventoryType" to (inventoryType ?: "null"), "slot" to (slot?.toString() ?: "null")))
         branchRuntime.handlePlayerItemEvent(player, kind, item, inventoryType, slot, villagerId)
     }
 
@@ -743,8 +822,7 @@ class QuestService(
         return when {
             goals.isNotEmpty() -> goals.sum()
             node.distanceGoal != null -> node.distanceGoal
-            node.count != null -> node.count.toDouble()
-            else -> 1.0
+            else -> node.count.toDouble()
         }
     }
 

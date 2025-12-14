@@ -30,6 +30,7 @@ import net.nemoria.quest.config.GuiConfigLoader
 import net.nemoria.quest.hook.ChatHistoryPacketListener
 import net.nemoria.quest.runtime.PlayerBlockTracker
 import net.nemoria.quest.core.MessageFormatter
+import net.nemoria.quest.core.DebugLog
 import java.io.File
 import org.bukkit.ChatColor
 
@@ -40,28 +41,38 @@ class NemoriaQuestPlugin : JavaPlugin() {
     private var itemListener: PlayerItemListener? = null
 
     override fun onLoad() {
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:43", "onLoad entry", mapOf(), this)
         if (server.pluginManager.getPlugin("PacketEvents") != null) {
+            net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:45", "onLoad PacketEvents found", mapOf(), this)
             packetEvents = SpigotPacketEventsBuilder.build(this)
             packetEvents?.load()
+        } else {
+            net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:47", "onLoad PacketEvents not found", mapOf(), this)
         }
     }
 
     override fun onEnable() {
         Services.plugin = this
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:50", "onEnable entry", mapOf())
         coreConfig = ConfigLoader(this).load()
         net.nemoria.quest.core.DebugLog.enabled = coreConfig.debugEnabled
+        net.nemoria.quest.core.DebugLog.debugToLogEnabled = coreConfig.debugToLog
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:53", "onEnable config loaded", mapOf("debugEnabled" to coreConfig.debugEnabled, "debugToLog" to coreConfig.debugToLog, "locale" to coreConfig.locale))
         val storageConfig = StorageConfigLoader(this).load()
         logger.info("NemoriaQuest enabling (targets ${coreConfig.multiVersion.joinToString()})")
 
         Services.i18n = I18n(coreConfig.locale, "en_US")
 
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:60", "onEnable initializing storage", mapOf("backend" to storageConfig.backend.name))
         initStorage(storageConfig)
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:61", "onEnable storage initialized", mapOf())
         exportTexts()
 
         Registries.bootstrap()
 
         Services.variables = net.nemoria.quest.core.VariableService(this, Services.storage.serverVarRepo)
         Services.variables.load()
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:66", "onEnable variables loaded", mapOf())
         loadScoreboardConfig()
         Services.scoreboardManager.start()
         if (server.pluginManager.getPlugin("PlaceholderAPI") != null) {
@@ -77,7 +88,10 @@ class NemoriaQuestPlugin : JavaPlugin() {
         packetEvents?.eventManager?.registerListener(ChatHistoryPacketListener())
         packetEvents?.let { PacketEvents.setAPI(it) }
 
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:82", "onEnable bootstrapping content", mapOf())
         ContentBootstrap(this, Services.storage.questModelRepo).bootstrap()
+        val questCount = Services.storage.questModelRepo.findAll().size
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:83", "onEnable content bootstrapped", mapOf("questCount" to questCount))
         Services.questService.preloadParticleScripts()
         loadGuiConfigs()
         logQuestLoadSummary("log.content.action_loaded")
@@ -101,8 +115,10 @@ class NemoriaQuestPlugin : JavaPlugin() {
     }
 
     override fun onDisable() {
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:127", "onDisable entry", mapOf())
         server.scheduler.cancelTasks(this)
         if (::coreConfig.isInitialized) {
+            net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:130", "onDisable shutting down services", mapOf())
             runCatching {
                 if (Services.hasQuestService()) {
                     Services.questService.shutdown()
@@ -117,13 +133,17 @@ class NemoriaQuestPlugin : JavaPlugin() {
         org.bukkit.event.HandlerList.unregisterAll(this)
         packetEvents?.terminate()
         logger.info("NemoriaQuest disabled")
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:143", "onDisable completed", mapOf())
     }
 
     fun reloadAll(): Boolean {
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:146", "reloadAll entry", mapOf())
         saveDefaultConfig()
         reloadConfig()
         coreConfig = ConfigLoader(this).load()
         net.nemoria.quest.core.DebugLog.enabled = coreConfig.debugEnabled
+        net.nemoria.quest.core.DebugLog.debugToLogEnabled = coreConfig.debugToLog
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:151", "reloadAll config loaded", mapOf("debugEnabled" to coreConfig.debugEnabled, "debugToLog" to coreConfig.debugToLog))
         Services.i18n = I18n(coreConfig.locale, "en_US")
         val storageConfig = StorageConfigLoader(this).load()
         runCatching {
@@ -163,13 +183,16 @@ class NemoriaQuestPlugin : JavaPlugin() {
         server.pluginManager.registerEvents(PlayerPhysicalListener(), this)
         server.pluginManager.registerEvents(PlayerMiscListener(), this)
         net.nemoria.quest.runtime.ChatHideService.clear()
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:191", "reloadAll completed", mapOf())
         return true
     }
 
     private fun initStorage(storageConfig: net.nemoria.quest.config.StorageConfig) {
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:194", "initStorage entry", mapOf("backend" to storageConfig.backend.name))
         val dataSource = DataSourceProvider.create(storageConfig)
         Services.storage = StorageManager(storageConfig.backend, dataSource)
         Services.questService = QuestService(this, Services.storage.userRepo, Services.storage.questModelRepo)
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:198", "initStorage completed", mapOf("backend" to storageConfig.backend.name))
     }
 
     private fun exportTexts() {
@@ -193,17 +216,24 @@ class NemoriaQuestPlugin : JavaPlugin() {
     }
 
     private fun resumeActiveBranches() {
+        DebugLog.logToFile("debug-session", "run1", "C", "NemoriaQuestPlugin.kt:195", "resumeActiveBranches entry", mapOf("onlinePlayersCount" to server.onlinePlayers.size))
         val scheduler = server.scheduler
         server.onlinePlayers.forEach { player ->
+            DebugLog.logToFile("debug-session", "run1", "C", "NemoriaQuestPlugin.kt:197", "resumeActiveBranches forEach", mapOf("playerName" to player.name, "playerUuid" to player.uniqueId.toString(), "isOnline" to player.isOnline))
             scheduler.runTaskAsynchronously(this, Runnable {
+                val playerStillOnline = player.isOnline
+                val playerObj = player.player
+                DebugLog.logToFile("debug-session", "run1", "C", "NemoriaQuestPlugin.kt:198", "resumeActiveBranches async start", mapOf("playerName" to player.name, "playerUuid" to player.uniqueId.toString(), "isOnline" to playerStillOnline, "playerObjNull" to (playerObj == null)))
                 Services.questService.preload(player)
                 val active = Services.questService.activeQuests(player)
+                DebugLog.logToFile("debug-session", "run1", "C", "NemoriaQuestPlugin.kt:200", "resumeActiveBranches after activeQuests", mapOf("playerUuid" to player.uniqueId.toString(), "activeCount" to active.size))
                 if (active.isEmpty()) return@Runnable
                 val models = active.mapNotNull { Services.questService.questInfo(it) }
                 if (models.isEmpty()) return@Runnable
                 scheduler.runTask(this, Runnable {
+                    val playerObjSync = player.player
+                    DebugLog.logToFile("debug-session", "run1", "C", "NemoriaQuestPlugin.kt:204", "resumeActiveBranches sync task", mapOf("playerUuid" to player.uniqueId.toString(), "playerObjNull" to (playerObjSync == null), "modelsCount" to models.size))
                     models.forEach { model ->
-                        val qid = model.id
                         Services.questService.resumeTimers(player, model)
                         if (model.branches.isNotEmpty()) {
                             Services.questService.resumeBranch(player, model)

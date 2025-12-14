@@ -14,6 +14,7 @@ import org.bukkit.event.player.PlayerInteractEntityEvent
 class BranchInteractListener : Listener {
     @EventHandler
     fun onNpcInteract(event: PlayerInteractEntityEvent) {
+        if (!Services.hasQuestService()) return
         val npcId = resolveNpcId(event.rightClicked) ?: return
         DebugLog.log("NPC interact player=${event.player.name} npcId=$npcId entity=${event.rightClicked.type}")
         Services.questService.branchRuntimeHandleNpc(event.player, npcId)
@@ -22,6 +23,7 @@ class BranchInteractListener : Listener {
     @EventHandler
     fun onChat(event: AsyncPlayerChatEvent) {
         // Wyłącz wybór przez numer (wymaganie: tylko klik i scroll)
+        if (!Services.hasQuestService()) return
         if (Services.questService.hasDiverge(event.player)) {
             event.isCancelled = true
         }
@@ -29,6 +31,7 @@ class BranchInteractListener : Listener {
 
     @EventHandler
     fun onHotbarScroll(event: PlayerItemHeldEvent) {
+        if (!Services.hasQuestService()) return
         val player = event.player
         if (!Services.questService.hasDiverge(player)) return
         val delta = event.newSlot - event.previousSlot
@@ -39,6 +42,7 @@ class BranchInteractListener : Listener {
 
     @EventHandler
     fun onLeftClick(event: PlayerInteractEvent) {
+        if (!Services.hasQuestService()) return
         val player = event.player
         if (!Services.questService.hasDiverge(player)) return
         if (event.action == Action.LEFT_CLICK_AIR || event.action == Action.LEFT_CLICK_BLOCK) {

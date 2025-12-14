@@ -1,6 +1,7 @@
 package net.nemoria.quest.command
 
 import net.nemoria.quest.NemoriaQuestPlugin
+import net.nemoria.quest.core.DebugLog
 import net.nemoria.quest.core.Services
 import net.nemoria.quest.core.MessageFormatter
 import org.bukkit.command.Command
@@ -10,10 +11,11 @@ import org.bukkit.command.TabCompleter
 
 class MainCommand(private val plugin: NemoriaQuestPlugin) : CommandExecutor, TabCompleter {
     override fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<out String>): Boolean {
+        DebugLog.logToFile("debug-session", "run1", "COMMAND", "MainCommand.kt:12", "onCommand entry", mapOf("sender" to sender.name, "label" to label, "args" to args.joinToString(" "), "argsCount" to args.size))
         if (args.isEmpty()) {
             return handleHelp(sender)
         }
-        return when (args[0].lowercase()) {
+        val result = when (args[0].lowercase()) {
             "reload" -> handleReload(sender)
             "start" -> handleStart(sender, args)
             "stop" -> handleStop(sender, args)
@@ -32,6 +34,8 @@ class MainCommand(private val plugin: NemoriaQuestPlugin) : CommandExecutor, Tab
                 true
             }
         }
+        DebugLog.logToFile("debug-session", "run1", "COMMAND", "MainCommand.kt:34", "onCommand result", mapOf<String, Any?>("sender" to sender.name, "command" to args[0].lowercase(), "result" to result))
+        return result
     }
 
     private fun handleReload(sender: CommandSender): Boolean {
@@ -45,21 +49,26 @@ class MainCommand(private val plugin: NemoriaQuestPlugin) : CommandExecutor, Tab
     }
 
     private fun handleStart(sender: CommandSender, args: Array<out String>): Boolean {
+        DebugLog.logToFile("debug-session", "run1", "COMMAND", "MainCommand.kt:47", "handleStart entry", mapOf<String, Any?>("sender" to sender.name, "questId" to (args.getOrNull(1) ?: "null")))
         if (!sender.hasPermission("nemoriaquest.command.start")) {
+            DebugLog.logToFile("debug-session", "run1", "COMMAND", "MainCommand.kt:48", "handleStart no permission", mapOf("sender" to sender.name))
             sendMsg(sender, "command.no_permission")
             return true
         }
         if (args.size < 2) {
+            DebugLog.logToFile("debug-session", "run1", "COMMAND", "MainCommand.kt:52", "handleStart missing args", mapOf("sender" to sender.name))
             sendMsg(sender, "command.start.usage")
             return true
         }
         val player = sender.server.getPlayer(sender.name)
         if (player == null) {
+            DebugLog.logToFile("debug-session", "run1", "COMMAND", "MainCommand.kt:56", "handleStart player not found", mapOf("sender" to sender.name))
             sendMsg(sender, "command.player_only")
             return true
         }
         val result = net.nemoria.quest.core.Services.questService.startQuest(player, args[1], viaCommand = true)
         net.nemoria.quest.core.DebugLog.log("Command start result=$result quest=${args[1]} player=${player.name}")
+        DebugLog.logToFile("debug-session", "run1", "COMMAND", "MainCommand.kt:61", "handleStart result", mapOf("sender" to sender.name, "playerUuid" to player.uniqueId.toString(), "questId" to args[1], "result" to result.name))
         when (result) {
             net.nemoria.quest.quest.QuestService.StartResult.SUCCESS ->
                 sendMsg(sender, "command.start.started", mapOf("quest" to args[1]))

@@ -1,6 +1,7 @@
 package net.nemoria.quest.runtime
 
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer
+import net.nemoria.quest.core.DebugLog
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -14,10 +15,12 @@ object ChatHideService {
     private val gson = GsonComponentSerializer.gson()
 
     fun hide(playerId: UUID) {
+        DebugLog.logToFile("debug-session", "run1", "CHAT_HIDE", "ChatHideService.kt:16", "hide entry", mapOf("playerUuid" to playerId.toString()))
         hidden.add(playerId)
     }
 
     fun show(playerId: UUID) {
+        DebugLog.logToFile("debug-session", "run1", "CHAT_HIDE", "ChatHideService.kt:20", "show entry", mapOf("playerUuid" to playerId.toString()))
         hidden.remove(playerId)
         allowOnce.remove(playerId)
         allowExact.remove(playerId)
@@ -104,12 +107,14 @@ object ChatHideService {
     }
 
     fun beginDialog(playerId: UUID) {
+        DebugLog.logToFile("debug-session", "run1", "CHAT_HIDE", "ChatHideService.kt:106", "beginDialog entry", mapOf("playerUuid" to playerId.toString()))
         hidden.add(playerId)
         dialogPlayers.add(playerId)
         clearDedup(playerId)
     }
 
     fun endDialog(playerId: UUID) {
+        DebugLog.logToFile("debug-session", "run1", "CHAT_HIDE", "ChatHideService.kt:112", "endDialog entry", mapOf("playerUuid" to playerId.toString()))
         dialogPlayers.remove(playerId)
         show(playerId)
     }

@@ -89,7 +89,7 @@ class PlayerPhysicalListener : Listener {
 
     @EventHandler(ignoreCancelled = true)
     fun onPortalEnter(event: EntityPortalEvent) {
-        val player = event.entity as? org.bukkit.entity.Player ?: return
+        val _player = event.entity as? org.bukkit.entity.Player ?: return
         net.nemoria.quest.core.DebugLog.log(
             "PORTAL_ENTER_EVT player={player.name} from={player.world.name} cancelled={event.isCancelled}"
         )

@@ -6,5 +6,6 @@ data class CoreConfig(
     val loggingLevel: String,
     val configVersion: String,
     val debugEnabled: Boolean = false,
+    val debugToLog: Boolean = false,
     val scoreboardEnabled: Boolean = true
 )

@@ -13,6 +13,7 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSy
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
+import net.nemoria.quest.core.DebugLog
 import net.nemoria.quest.core.Services
 import net.nemoria.quest.runtime.ChatHideService
 import net.nemoria.quest.runtime.ChatHistoryManager
@@ -37,6 +38,7 @@ class ChatHidePacketListener : PacketListenerAbstract(PacketListenerPriority.NOR
             ChatHideService.consumeExact(id) ||
             ChatHideService.consumeAllowed(id)
         ) {
+            DebugLog.logToFile("debug-session", "run1", "HOOK", "ChatHidePacketListener.kt:36", "onPacketSend allowed", mapOf("playerUuid" to id.toString(), "packetType" to type.name))
             return
         }
 
@@ -46,8 +48,12 @@ class ChatHidePacketListener : PacketListenerAbstract(PacketListenerPriority.NOR
         } else {
             "${type.name}:$json"
         }
-        if (!ChatMessageDeduplicator.shouldProcess(id, dedupToken)) return
+        if (!ChatMessageDeduplicator.shouldProcess(id, dedupToken)) {
+            DebugLog.logToFile("debug-session", "run1", "HOOK", "ChatHidePacketListener.kt:49", "onPacketSend deduplicated", mapOf("playerUuid" to id.toString(), "packetType" to type.name))
+            return
+        }
 
+        DebugLog.logToFile("debug-session", "run1", "HOOK", "ChatHidePacketListener.kt:51", "onPacketSend hiding", mapOf("playerUuid" to id.toString(), "packetType" to type.name, "plainText" to plainText.take(100)))
         ChatHistoryManager.append(id, component)
         ChatHideService.bufferMessage(id, json)
         event.isCancelled = true

@@ -1,5 +1,6 @@
 package net.nemoria.quest.runtime
 
+import net.nemoria.quest.core.DebugLog
 import net.nemoria.quest.core.Services
 import net.nemoria.quest.data.repo.PlayerBlockRepository
 import org.bukkit.Location
@@ -19,12 +20,15 @@ object PlayerBlockTracker {
     private var pruneTask: BukkitRunnable? = null
 
     fun init(repository: PlayerBlockRepository) {
+        DebugLog.logToFile("debug-session", "run1", "BLOCK_TRACKER", "PlayerBlockTracker.kt:21", "init entry", mapOf())
         repo = repository
         pruneExpired()
         schedulePrune()
+        DebugLog.logToFile("debug-session", "run1", "BLOCK_TRACKER", "PlayerBlockTracker.kt:25", "init completed", mapOf())
     }
 
     fun markPlaced(block: Block, owner: UUID? = null) {
+        DebugLog.logToFile("debug-session", "run1", "BLOCK_TRACKER", "PlayerBlockTracker.kt:27", "markPlaced entry", mapOf("world" to block.world.name, "x" to block.x, "y" to block.y, "z" to block.z, "owner" to (owner?.toString() ?: "null")))
         pruneExpired()
         val k = key(block.location)
         placed.add(k)
@@ -37,6 +41,7 @@ object PlayerBlockTracker {
                 r.upsert(block.world.name, block.x, block.y, block.z, owner, placedAt[k] ?: System.currentTimeMillis())
             }
         }
+        DebugLog.logToFile("debug-session", "run1", "BLOCK_TRACKER", "PlayerBlockTracker.kt:39", "markPlaced completed", mapOf("key" to k))
     }
 
     fun isPlayerPlaced(block: Block): Boolean {
@@ -92,7 +97,8 @@ object PlayerBlockTracker {
 
     private fun schedulePrune() {
         pruneTask?.cancel()
-        val plugin = Services.plugin ?: return
+        if (!Services.hasPlugin()) return
+        val plugin = Services.plugin
         pruneTask = object : BukkitRunnable() {
             override fun run() {
                 pruneExpired()
@@ -101,7 +107,8 @@ object PlayerBlockTracker {
     }
 
     private fun runAsync(block: () -> Unit) {
-        val plugin = Services.plugin ?: return
+        if (!Services.hasPlugin()) return
+        val plugin = Services.plugin
         plugin.server.scheduler.runTaskAsynchronously(plugin, Runnable { block() })
     }
 

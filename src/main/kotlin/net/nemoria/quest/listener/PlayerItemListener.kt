@@ -249,7 +249,7 @@ class PlayerItemListener : Listener {
         val isFurnaceLike = topType == InventoryType.FURNACE.name || topType == InventoryType.BLAST_FURNACE.name || topType == InventoryType.SMOKER.name
         if (event.view.topInventory.type == InventoryType.CRAFTING) return
         val cursor = event.oldCursor
-        if (cursor == null || cursor.type.isAir) return
+        if (cursor.type.isAir) return
         if (isPutNode && isCounted(cursor, countedPutKey)) return
         val topSize = event.view.topInventory.size
         if (isFurnaceLike) {
@@ -294,8 +294,8 @@ class PlayerItemListener : Listener {
             return
         }
         val old = event.oldItemStack
-        val new = event.newItemStack
-        if (new == null || new.type.isAir) return
+        val new = event.newItemStack ?: return
+        if (new.type.isAir) return
         val sameType = old != null && !old.type.isAir && old.type == new.type
         val oldAmount = if (sameType) old.amount else 0
         val delta = new.amount - oldAmount

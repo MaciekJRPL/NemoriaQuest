@@ -3,6 +3,7 @@ package net.nemoria.quest.gui
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer
 import net.nemoria.quest.core.Colors
+import net.nemoria.quest.core.DebugLog
 import net.nemoria.quest.core.MessageFormatter
 import net.nemoria.quest.core.Services
 import org.bukkit.Bukkit
@@ -37,17 +38,23 @@ class ScoreboardManager {
     private data class RenderState(val signature: String)
 
     fun start() {
+        DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:39", "start entry", mapOf())
         stop()
         val cfg = Services.scoreboardConfig
-        if (!cfg.enabled) return
+        if (!cfg.enabled) {
+            DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:42", "start disabled", mapOf())
+            return
+        }
         task = object : BukkitRunnable() {
             override fun run() {
                 Bukkit.getOnlinePlayers().forEach { update(it) }
             }
         }.runTaskTimer(Services.plugin, 20L, 20L)
+        DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:47", "start scheduled", mapOf())
     }
 
     fun stop() {
+        DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:50", "stop entry", mapOf())
         task?.cancel()
         task = null
         cache.clear()
@@ -55,16 +62,19 @@ class ScoreboardManager {
         rendering.clear()
         rendered.clear()
         Bukkit.getOnlinePlayers().forEach { clear(it) }
+        DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:57", "stop completed", mapOf())
     }
 
     fun update(player: Player) {
         val now = System.currentTimeMillis()
         val snap = cache[player.uniqueId]
         if (snap == null) {
+            DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:63", "update no cache, fetching", mapOf("playerUuid" to player.uniqueId.toString()))
             fetchAsync(player, rerender = true)
             return
         }
         if (now - snap.timestamp > cacheTtlMs) {
+            DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:67", "update cache expired, fetching", mapOf("playerUuid" to player.uniqueId.toString(), "ageMs" to (now - snap.timestamp)))
             fetchAsync(player, rerender = true)
             return
         }
@@ -72,7 +82,10 @@ class ScoreboardManager {
         val questNamePlain = snap.questNamePlain
         val detailRaw = snap.detail
         val showQuest = snap.showQuest
-        val manager = Bukkit.getScoreboardManager() ?: return
+        val manager = Bukkit.getScoreboardManager() ?: run {
+            DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:85", "update scoreboard manager null", mapOf("playerUuid" to player.uniqueId.toString()))
+            return
+        }
         if (player.scoreboard == manager.mainScoreboard) {
             player.scoreboard = manager.newScoreboard
         }
@@ -116,7 +129,10 @@ class ScoreboardManager {
             append("|")
             lines.joinTo(this, separator = "\u0001")
         }
-        rendered[player.uniqueId]?.let { if (it.signature == signature) return }
+        rendered[player.uniqueId]?.let { if (it.signature == signature) {
+            return
+        } }
+        DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:121", "update rendering", mapOf("playerUuid" to player.uniqueId.toString(), "linesCount" to lines.size, "showQuest" to showQuest, "questId" to (questId ?: "null")))
         // render lines
         var score = lines.size
         sb.entries.toList().forEach { sb.resetScores(it) }
@@ -132,6 +148,7 @@ class ScoreboardManager {
         }
         player.scoreboard = sb
         rendered[player.uniqueId] = RenderState(signature)
+        DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:134", "update completed", mapOf("playerUuid" to player.uniqueId.toString(), "linesCount" to lines.size))
     }
 
     private fun formatAndLimit(raw: String, limit: Int, placeholders: Map<String, String>): String {
@@ -201,12 +218,20 @@ class ScoreboardManager {
     }
 
     private fun clear(player: Player) {
-        val sb = Bukkit.getScoreboardManager().newScoreboard
+        val manager = Bukkit.getScoreboardManager() ?: run {
+            DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:217", "clear scoreboard manager null", mapOf("playerUuid" to player.uniqueId.toString()))
+            return
+        }
+        val sb = manager.newScoreboard
         player.scoreboard = sb
     }
 
     private fun fetchAsync(player: Player, rerender: Boolean) {
-        if (!inFlight.add(player.uniqueId)) return
+        DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:208", "fetchAsync entry", mapOf("playerUuid" to player.uniqueId.toString(), "rerender" to rerender))
+        if (!inFlight.add(player.uniqueId)) {
+            DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:209", "fetchAsync already in flight", mapOf("playerUuid" to player.uniqueId.toString()))
+            return
+        }
         Bukkit.getScheduler().runTaskAsynchronously(Services.plugin, Runnable {
             try {
                 val active = Services.questService.activeQuests(player)
@@ -218,6 +243,7 @@ class ScoreboardManager {
                 }
                 val quest = Services.questService.questInfo(questId)
                 if (quest == null || quest.progressNotify?.scoreboard != true) {
+                    DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:220", "fetchAsync quest not found or scoreboard disabled", mapOf("playerUuid" to player.uniqueId.toString(), "questId" to questId, "questNull" to (quest == null), "scoreboardEnabled" to (quest?.progressNotify?.scoreboard == true)))
                     val ts = System.currentTimeMillis()
                     cache[player.uniqueId] = Snapshot(null, null, null, false, Services.plugin.description.version, ts)
                     return@Runnable
@@ -228,6 +254,7 @@ class ScoreboardManager {
                     ?: (quest.displayName ?: quest.name)
                 val ts = System.currentTimeMillis()
                 cache[player.uniqueId] = Snapshot(questId, questNamePlain, detail, true, Services.plugin.description.version, ts)
+                DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:230", "fetchAsync cached", mapOf("playerUuid" to player.uniqueId.toString(), "questId" to questId, "questName" to questNamePlain.take(50)))
             } finally {
                 inFlight.remove(player.uniqueId)
                 if (rerender) {

@@ -5,6 +5,7 @@ core:
   multi_version: ["1.21.8", "1.21.9", "1.21.10"]
   locale: en_US
   debug: false
+  debug-to-log: false
   scoreboard_enabled: true
 logging:
   level: INFO

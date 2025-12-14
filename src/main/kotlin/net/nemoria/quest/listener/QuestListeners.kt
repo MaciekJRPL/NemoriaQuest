@@ -18,6 +18,7 @@ class QuestListeners : Listener {
     @EventHandler
     fun onEntityDeath(event: EntityDeathEvent) {
         val killer = event.entity.killer ?: return
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "EVENT", "QuestListeners.kt:19", "onEntityDeath", mapOf("killerUuid" to killer.uniqueId.toString(), "entityType" to event.entity.type.name))
         val type = event.entity.type
         val questService = Services.questService
         val active = questService.activeQuests(killer)
@@ -27,6 +28,7 @@ class QuestListeners : Listener {
             model.objectives.filter { it.type == QuestObjectiveType.KILL_MOB }.forEach { obj ->
                 val match = obj.entityType?.let { eqType(it, type) } ?: true
                 if (match) {
+                    net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "EVENT", "QuestListeners.kt:30", "onEntityDeath match", mapOf("questId" to questId, "objectiveId" to obj.id, "entityType" to type.name))
                     questService.incrementObjective(killer, questId, obj.id, obj.count)
                 }
             }
@@ -62,12 +64,13 @@ class QuestListeners : Listener {
         val active = questService.activeQuests(player)
         if (active.isEmpty()) return
         val to = event.to ?: return
+        val toWorld = to.world ?: return
         active.forEach { questId ->
             val model = Services.storage.questModelRepo.findById(questId) ?: return@forEach
             model.objectives.filter { it.type == QuestObjectiveType.MOVE_TO }.forEach { obj ->
                 val targetWorld = obj.world
-                if (targetWorld != null && to.world?.name != targetWorld) return@forEach
-                val targetLoc = Location(to.world, obj.x ?: return@forEach, obj.y ?: return@forEach, obj.z ?: return@forEach)
+                if (targetWorld != null && toWorld.name != targetWorld) return@forEach
+                val targetLoc = Location(toWorld, obj.x ?: return@forEach, obj.y ?: return@forEach, obj.z ?: return@forEach)
                 val radius = obj.radius ?: 1.5
                 if (to.distanceSquared(targetLoc) <= radius * radius) {
                     questService.completeObjective(player, questId, obj.id)

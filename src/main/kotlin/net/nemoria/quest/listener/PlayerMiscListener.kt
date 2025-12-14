@@ -20,6 +20,7 @@ class PlayerMiscListener : Listener {
     @EventHandler(ignoreCancelled = true)
     fun onChat(event: AsyncPlayerChatEvent) {
         if (chatBypass.remove(event.player.uniqueId)) return
+        if (!Services.hasPlugin() || !Services.hasQuestService()) return
         val player = event.player
         val message = event.message
         event.isCancelled = true
@@ -42,6 +43,7 @@ class PlayerMiscListener : Listener {
     @EventHandler(ignoreCancelled = true)
     fun onCommand(event: PlayerCommandPreprocessEvent) {
         if (commandBypass.remove(event.player.uniqueId)) return
+        if (!Services.hasPlugin() || !Services.hasQuestService()) return
         val player = event.player
         val msg = event.message.removePrefix("/").trim()
         event.isCancelled = true
@@ -66,21 +68,25 @@ class PlayerMiscListener : Listener {
 
     @EventHandler
     fun onJoin(event: PlayerJoinEvent) {
+        if (!Services.hasQuestService()) return
         Services.questService.handlePlayerMiscEvent(event.player, BranchRuntimeManager.MiscEventType.CONNECT, null)
     }
 
     @EventHandler
     fun onQuit(event: PlayerQuitEvent) {
+        if (!Services.hasQuestService()) return
         Services.questService.handlePlayerMiscEvent(event.player, BranchRuntimeManager.MiscEventType.DISCONNECT, null)
     }
 
     @EventHandler
     fun onRespawn(event: PlayerRespawnEvent) {
+        if (!Services.hasQuestService()) return
         Services.questService.handlePlayerMiscEvent(event.player, BranchRuntimeManager.MiscEventType.RESPAWN, null)
     }
 
     @EventHandler(ignoreCancelled = true)
     fun onAdvancement(event: PlayerAdvancementDoneEvent) {
+        if (!Services.hasQuestService()) return
         val key = event.advancement.key().toString()
         Services.questService.handlePlayerMiscEvent(
             event.player,

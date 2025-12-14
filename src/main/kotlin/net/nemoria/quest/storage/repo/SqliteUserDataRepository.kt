@@ -3,6 +3,7 @@ package net.nemoria.quest.storage.repo
 import com.zaxxer.hikari.HikariDataSource
 import net.nemoria.quest.data.repo.UserDataRepository
 import net.nemoria.quest.data.user.*
+import net.nemoria.quest.core.DebugLog
 import java.sql.ResultSet
 import java.util.UUID
 import com.google.gson.Gson
@@ -12,6 +13,7 @@ class SqliteUserDataRepository(private val dataSource: HikariDataSource) : UserD
     private val gson = Gson()
 
     override fun load(uuid: UUID): UserData {
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteUserDataRepository.kt:15", "load entry", mapOf("uuid" to uuid.toString()))
         dataSource.connection.use { conn ->
             conn.prepareStatement("SELECT active, completed, progress, user_vars, cooldowns FROM user_data WHERE uuid = ?").use { ps ->
                 ps.setString(1, uuid.toString())
@@ -19,18 +21,25 @@ class SqliteUserDataRepository(private val dataSource: HikariDataSource) : UserD
                     if (rs.next()) {
                         val progressRaw = rs.getString("progress")
                         val userVarsRaw = rs.getString("user_vars")
+                        val active = rs.getString("active").toSetMutable()
+                        val completed = rs.getString("completed").toSetMutable()
+                        val progress = parseProgress(progressRaw)
+                        val userVars = parseMap(userVarsRaw)
+                        val cooldowns = parseCooldowns(rs.getString("cooldowns"))
+                        DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteUserDataRepository.kt:23", "load found", mapOf("uuid" to uuid.toString(), "activeCount" to active.size, "completedCount" to completed.size, "progressCount" to progress.size, "userVarsCount" to userVars.size, "cooldownsCount" to cooldowns.size))
                         return UserData(
                             uuid = uuid,
-                            activeQuests = rs.getString("active").toSetMutable(),
-                            completedQuests = rs.getString("completed").toSetMutable(),
-                            progress = parseProgress(progressRaw),
-                            userVariables = parseMap(userVarsRaw),
-                            cooldowns = parseCooldowns(rs.getString("cooldowns"))
+                            activeQuests = active,
+                            completedQuests = completed,
+                            progress = progress,
+                            userVariables = userVars,
+                            cooldowns = cooldowns
                         )
                     }
                 }
             }
             // Not found -> insert empty
+            DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteUserDataRepository.kt:35", "load not found - creating empty", mapOf("uuid" to uuid.toString()))
             val empty = UserData(uuid)
             save(empty)
             return empty
@@ -38,6 +47,7 @@ class SqliteUserDataRepository(private val dataSource: HikariDataSource) : UserD
     }
 
     override fun save(data: UserData) {
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteUserDataRepository.kt:41", "save entry", mapOf("uuid" to data.uuid.toString(), "activeCount" to data.activeQuests.size, "completedCount" to data.completedQuests.size, "progressCount" to data.progress.size))
         dataSource.connection.use { conn ->
             conn.prepareStatement(
                 """
@@ -52,7 +62,8 @@ class SqliteUserDataRepository(private val dataSource: HikariDataSource) : UserD
                 ps.setString(4, gson.toJson(data.progress))
                 ps.setString(5, gson.toJson(data.userVariables))
                 ps.setString(6, gson.toJson(data.cooldowns))
-                ps.executeUpdate()
+                val rows = ps.executeUpdate()
+                DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteUserDataRepository.kt:56", "save completed", mapOf("uuid" to data.uuid.toString(), "rowsAffected" to rows))
             }
         }
     }
@@ -61,9 +72,11 @@ class SqliteUserDataRepository(private val dataSource: HikariDataSource) : UserD
         if (isBlank()) mutableSetOf() else split(";").filter { it.isNotBlank() }.toMutableSet()
 
     private fun parseProgress(raw: String?): MutableMap<String, QuestProgress> {
+        DebugLog.logToFile("debug-session", "run1", "E", "SqliteUserDataRepository.kt:63", "parseProgress entry", mapOf("rawIsNull" to (raw == null), "rawIsBlank" to raw.isNullOrBlank(), "rawLength" to (raw?.length ?: 0)))
         if (raw.isNullOrBlank()) return mutableMapOf()
         val type = object : TypeToken<Map<String, QuestProgress>>() {}.type
-        return runCatching { gson.fromJson<Map<String, QuestProgress>>(raw, type).toMutableMap() }.getOrElse {
+        return runCatching { gson.fromJson<Map<String, QuestProgress>>(raw, type).toMutableMap() }.getOrElse { ex ->
+            DebugLog.logToFile("debug-session", "run1", "E", "SqliteUserDataRepository.kt:66", "parseProgress JSON error", mapOf("errorType" to ex.javaClass.simpleName, "errorMessage" to (ex.message?.take(100) ?: "null")))
             // legacy fallback: "questId:step"
             val map = mutableMapOf<String, QuestProgress>()
             raw.split(";").forEach { entry ->

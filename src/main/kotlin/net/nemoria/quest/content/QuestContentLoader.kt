@@ -6,14 +6,21 @@ import java.io.File
 
 object QuestContentLoader {
     fun loadAll(dir: File): List<QuestModel> {
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "CONTENT", "QuestContentLoader.kt:8", "loadAll entry", mapOf("dir" to dir.absolutePath, "exists" to dir.exists(), "isDirectory" to dir.isDirectory))
         if (!dir.exists() || !dir.isDirectory) return emptyList()
-        return dir.listFiles { f -> f.isFile && (f.extension.equals("yml", true) || f.extension.equals("yaml", true)) }
-            ?.mapNotNull { loadQuest(it) }
-            ?: emptyList()
+        val files = dir.listFiles { f -> f.isFile && (f.extension.equals("yml", true) || f.extension.equals("yaml", true)) }
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "CONTENT", "QuestContentLoader.kt:10", "loadAll files found", mapOf("filesCount" to (files?.size ?: 0)))
+        return files?.mapNotNull { loadQuest(it) } ?: emptyList()
     }
 
     private fun loadQuest(file: File): QuestModel? {
-        val cfg = YamlConfiguration.loadConfiguration(file)
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "CONTENT", "QuestContentLoader.kt:15", "loadQuest entry", mapOf("file" to file.name))
+        val cfg = try {
+            YamlConfiguration.loadConfiguration(file)
+        } catch (e: Exception) {
+            net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "CONTENT", "QuestContentLoader.kt:16", "loadQuest YAML error", mapOf("file" to file.name, "error" to (e.message ?: "unknown")))
+            return null
+        }
         val id = cfg.getString("id")?.takeIf { it.isNotBlank() } ?: file.nameWithoutExtension
         val name = cfg.getString("name") ?: id
         val description = cfg.getString("description")
@@ -131,10 +138,10 @@ object QuestContentLoader {
             val points = sec.getConfigurationSection("points")?.getKeys(false)?.associateWith { key ->
                 sec.getConfigurationSection("points")!!.getInt(key, 0)
             } ?: emptyMap()
-            val variables = sec.getConfigurationSection("variables")?.getKeys(false)?.associateWith { key ->
-                sec.getConfigurationSection("variables")!!.getString(key, "") ?: ""
+            val rewardVariables = sec.getConfigurationSection("variables")?.getKeys(false)?.associateWith { varKey ->
+                sec.getConfigurationSection("variables")!!.getString(varKey, "") ?: ""
             } ?: emptyMap()
-            QuestRewards(commands, points, variables)
+            QuestRewards(commands, points, rewardVariables)
         } ?: QuestRewards()
         val branches = cfg.getConfigurationSection("branches")?.getKeys(false)?.associateWith { key ->
             val branchSec = cfg.getConfigurationSection("branches.$key") ?: return@associateWith null
@@ -152,7 +159,7 @@ object QuestContentLoader {
                 parseEndObject(listSec.getConfigurationSection(idx))
             }
         } ?: emptyMap()
-        return QuestModel(
+        val questModel = QuestModel(
             id = id,
             name = name,
             description = description,
@@ -184,6 +191,8 @@ object QuestContentLoader {
             commandRestriction = commandRestriction,
             cooldown = cooldown
         )
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "CONTENT", "QuestContentLoader.kt:196", "loadQuest success", mapOf("questId" to id, "objectivesCount" to objectives.size, "branchesCount" to branches.size))
+        return questModel
     }
 
     private fun parseDurationSeconds(raw: String?): Long? {

@@ -2,6 +2,7 @@ package net.nemoria.quest.storage
 
 import com.zaxxer.hikari.HikariDataSource
 import net.nemoria.quest.config.BackendType
+import net.nemoria.quest.core.DebugLog
 import net.nemoria.quest.data.repo.PlayerBlockRepository
 import net.nemoria.quest.data.repo.QuestModelRepository
 import net.nemoria.quest.data.repo.ServerVariableRepository
@@ -26,37 +27,47 @@ class StorageManager(
     val playerBlockRepo: PlayerBlockRepository
 
     init {
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "StorageManager.kt:28", "StorageManager init entry", mapOf("backend" to backend.name))
         migrate()
         when (backend) {
             BackendType.SQLITE -> {
+                DebugLog.logToFile("debug-session", "run1", "STORAGE", "StorageManager.kt:31", "StorageManager initializing SQLite repos", mapOf())
                 userRepo = SqliteUserDataRepository(dataSource)
                 questModelRepo = SqliteQuestModelRepository(dataSource)
                 serverVarRepo = SqliteServerVariableRepository(dataSource)
                 playerBlockRepo = SqlitePlayerBlockRepository(dataSource)
             }
             BackendType.MYSQL -> {
+                DebugLog.logToFile("debug-session", "run1", "STORAGE", "StorageManager.kt:37", "StorageManager initializing MySQL repos", mapOf())
                 userRepo = MysqlUserDataRepository(dataSource)
                 questModelRepo = MysqlQuestModelRepository(dataSource)
                 serverVarRepo = MysqlServerVariableRepository(dataSource)
                 playerBlockRepo = MysqlPlayerBlockRepository(dataSource)
             }
         }
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "StorageManager.kt:43", "StorageManager init completed", mapOf("backend" to backend.name))
     }
 
     fun close() {
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "StorageManager.kt:46", "StorageManager close entry", mapOf("backend" to backend.name))
         dataSource.close()
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "StorageManager.kt:48", "StorageManager close completed", mapOf())
     }
 
     private fun migrate() {
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "StorageManager.kt:50", "StorageManager migrate entry", mapOf("backend" to backend.name))
         dataSource.connection.use { conn ->
             conn.autoCommit = false
             try {
+                DebugLog.logToFile("debug-session", "run1", "STORAGE", "StorageManager.kt:54", "StorageManager creating tables", mapOf())
                 createUserTable(conn)
                 createQuestModelTable(conn)
                 createServerVariableTable(conn)
                 createPlayerBlockTable(conn)
                 conn.commit()
+                DebugLog.logToFile("debug-session", "run1", "STORAGE", "StorageManager.kt:59", "StorageManager migrate committed", mapOf())
             } catch (ex: Exception) {
+                DebugLog.logToFile("debug-session", "run1", "STORAGE", "StorageManager.kt:60", "StorageManager migrate error", mapOf("error" to ex.message, "errorType" to ex.javaClass.simpleName))
                 runCatching { conn.rollback() }
                 throw ex
             } finally {
@@ -66,6 +77,7 @@ class StorageManager(
     }
 
     private fun createUserTable(conn: Connection) {
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "StorageManager.kt:68", "createUserTable entry", mapOf("backend" to backend.name))
         val uuidType = if (backend == BackendType.MYSQL) "VARCHAR(36)" else "TEXT"
         val textType = if (backend == BackendType.MYSQL) "LONGTEXT" else "TEXT"
         conn.createStatement().use { st ->
@@ -86,9 +98,11 @@ class StorageManager(
         addColumnIfMissing(conn, "user_data", "progress", userColumnDdl)
         addColumnIfMissing(conn, "user_data", "user_vars", userColumnDdl)
         addColumnIfMissing(conn, "user_data", "cooldowns", userColumnDdl)
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "StorageManager.kt:89", "createUserTable completed", mapOf())
     }
 
     private fun createQuestModelTable(conn: Connection) {
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "StorageManager.kt:91", "createQuestModelTable entry", mapOf("backend" to backend.name))
         val idType = if (backend == BackendType.MYSQL) "VARCHAR(191)" else "TEXT"
         val textType = if (backend == BackendType.MYSQL) "TEXT" else "TEXT"
         val longTextType = if (backend == BackendType.MYSQL) "LONGTEXT" else "TEXT"
@@ -174,9 +188,11 @@ class StorageManager(
                 """.trimIndent()
             )
         }
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "StorageManager.kt:177", "createServerVariableTable completed", mapOf())
     }
 
     private fun createPlayerBlockTable(conn: Connection) {
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "StorageManager.kt:179", "createPlayerBlockTable entry", mapOf("backend" to backend.name))
         val worldType = if (backend == BackendType.MYSQL) "VARCHAR(191)" else "TEXT"
         val ownerType = if (backend == BackendType.MYSQL) "VARCHAR(36)" else "TEXT"
         val intType = if (backend == BackendType.MYSQL) "INT" else "INTEGER"
@@ -197,15 +213,20 @@ class StorageManager(
             )
         }
         createIndexIfMissing(conn, "player_blocks", "idx_player_blocks_ts", "ts")
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "StorageManager.kt:199", "createPlayerBlockTable completed", mapOf())
     }
 
     private fun addColumnIfMissing(conn: Connection, table: String, column: String, ddl: String) {
-        if (hasColumn(conn, table, column)) return
+        if (hasColumn(conn, table, column)) {
+            return
+        }
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "StorageManager.kt:202", "addColumnIfMissing adding column", mapOf("table" to table, "column" to column))
         val tableId = quoteIdentifier(table)
         val columnId = quoteIdentifier(column)
         conn.createStatement().use { st ->
             st.executeUpdate("ALTER TABLE $tableId ADD COLUMN $columnId $ddl")
         }
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "StorageManager.kt:208", "addColumnIfMissing column added", mapOf("table" to table, "column" to column))
     }
 
     private fun hasColumn(conn: Connection, table: String, column: String): Boolean {

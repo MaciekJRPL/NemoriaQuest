@@ -2,6 +2,7 @@ package net.nemoria.quest.gui
 
 import net.nemoria.quest.config.GuiConfig
 import net.nemoria.quest.config.GuiType
+import net.nemoria.quest.core.DebugLog
 import net.nemoria.quest.core.MessageFormatter
 import net.nemoria.quest.core.Services
 import net.nemoria.quest.quest.QuestModel
@@ -17,9 +18,10 @@ import org.bukkit.inventory.ItemFlag
 import org.bukkit.inventory.ItemStack
 
 class GuiManager {
-    private val keyQuestId = NamespacedKey(Services.plugin, "quest_id")
+    private val keyQuestId: NamespacedKey by lazy { NamespacedKey(Services.plugin, "quest_id") }
 
     fun openList(player: Player, config: GuiConfig, filterActive: Boolean = false, page: Int = 0) {
+        DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:22", "openList entry", mapOf("playerUuid" to player.uniqueId.toString(), "filterActive" to filterActive, "page" to page, "guiType" to config.type.name))
         val holder = ListHolder(filterActive, page, config)
         val inv = Bukkit.createInventory(holder, config.type.size, MessageFormatter.format(config.name))
         holder.inv = inv
@@ -40,6 +42,7 @@ class GuiManager {
         }
         val startIndex = page * PAGE_SIZE
         val pageItems = shown.drop(startIndex).take(PAGE_SIZE)
+        DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:41", "openList filtered", mapOf("playerUuid" to player.uniqueId.toString(), "allCount" to all.size, "shownCount" to shown.size, "pageItemsCount" to pageItems.size))
 
         fillBorder(inv)
         pageItems.forEachIndexed { idx, model ->
@@ -50,9 +53,11 @@ class GuiManager {
         }
         inv.setItem(inv.size - 5, toggleItem(filterActive))
         player.openInventory(inv)
+        DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:52", "openList opened", mapOf("playerUuid" to player.uniqueId.toString(), "pageItemsCount" to pageItems.size))
     }
 
     fun openDetail(player: Player, model: QuestModel) {
+        DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:55", "openDetail entry", mapOf("playerUuid" to player.uniqueId.toString(), "questId" to model.id))
         val holder = DetailHolder(model.id)
         val inv = Bukkit.createInventory(holder, 27, MessageFormatter.format("<gold>${model.displayName ?: model.name}"))
         holder.inv = inv
@@ -76,13 +81,24 @@ class GuiManager {
         }
         inv.setItem(13, info)
         player.openInventory(inv)
+        DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:78", "openDetail opened", mapOf("playerUuid" to player.uniqueId.toString(), "questId" to model.id))
     }
 
     internal fun questFromItem(item: ItemStack?): String? {
-        if (item == null) return null
-        val meta = item.itemMeta ?: return null
+        DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:81", "questFromItem entry", mapOf("hasItem" to (item != null), "itemType" to (item?.type?.name ?: "null")))
+        if (item == null) {
+            DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:82", "questFromItem null item", mapOf())
+            return null
+        }
+        val meta = item.itemMeta
+        if (meta == null) {
+            DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:84", "questFromItem no meta", mapOf())
+            return null
+        }
         val container = meta.persistentDataContainer
-        return container.get(keyQuestId, org.bukkit.persistence.PersistentDataType.STRING)
+        val questId = container.get(keyQuestId, org.bukkit.persistence.PersistentDataType.STRING)
+        DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:87", "questFromItem result", mapOf("questId" to (questId ?: "null")))
+        return questId
     }
 
     private fun questItem(player: Player, model: QuestModel, status: QuestStatusItemState, progress: QuestProgress?): ItemStack {
@@ -137,7 +153,7 @@ class GuiManager {
         )
         private const val PAGE_SIZE = 28
 
-        private fun status(player: Player, model: QuestModel, active: Set<String>, completed: Set<String>): QuestStatusItemState {
+        private fun status(_player: Player, model: QuestModel, active: Set<String>, completed: Set<String>): QuestStatusItemState {
             return when {
                 active.contains(model.id) -> QuestStatusItemState.PROGRESS
                 completed.contains(model.id) -> QuestStatusItemState.COMPLETED
@@ -185,7 +201,7 @@ class GuiManager {
             )
         }
 
-        private fun render(player: Player, model: QuestModel, text: String, placeholders: Map<String, String>, progress: QuestProgress?): String {
+        private fun render(player: Player, model: QuestModel, text: String, placeholders: Map<String, String>, _progress: QuestProgress?): String {
             var out = text
             placeholders.forEach { (k, v) -> out = out.replace("{$k}", v) }
             out = Services.questService.renderPlaceholders(out, model.id, player)

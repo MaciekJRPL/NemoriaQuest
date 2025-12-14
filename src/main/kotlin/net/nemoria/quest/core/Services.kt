@@ -21,4 +21,5 @@ object Services {
     lateinit var scoreboardConfig: net.nemoria.quest.config.ScoreboardConfig
 
     fun hasQuestService(): Boolean = this::questService.isInitialized
+    fun hasPlugin(): Boolean = this::plugin.isInitialized
 }

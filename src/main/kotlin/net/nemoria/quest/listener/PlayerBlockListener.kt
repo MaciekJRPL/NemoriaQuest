@@ -23,6 +23,7 @@ class PlayerBlockListener : Listener {
 
     @EventHandler(ignoreCancelled = true)
     fun onBreak(event: BlockBreakEvent) {
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "EVENT", "PlayerBlockListener.kt:25", "onBreak", mapOf("playerUuid" to event.player.uniqueId.toString(), "blockType" to event.block.type.name, "world" to event.block.world.name))
         val block = event.block
         Services.questService.handlePlayerBlockEvent(
             event.player,

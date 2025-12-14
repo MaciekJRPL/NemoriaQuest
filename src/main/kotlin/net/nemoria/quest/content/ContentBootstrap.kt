@@ -101,7 +101,10 @@ class ContentBootstrap(
     }
 
     private fun loadQuests(questsDir: File) {
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "CONTENT", "ContentBootstrap.kt:103", "loadQuests entry", mapOf("dir" to questsDir.absolutePath))
         val quests = QuestContentLoader.loadAll(questsDir)
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "CONTENT", "ContentBootstrap.kt:105", "loadQuests loaded", mapOf("questsCount" to quests.size))
         questRepo.saveAll(quests)
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "CONTENT", "ContentBootstrap.kt:105", "loadQuests saved", mapOf("questsCount" to quests.size))
     }
 }

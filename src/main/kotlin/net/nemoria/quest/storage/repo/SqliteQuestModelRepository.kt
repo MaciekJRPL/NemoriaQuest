@@ -3,6 +3,7 @@ package net.nemoria.quest.storage.repo
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.zaxxer.hikari.HikariDataSource
+import net.nemoria.quest.core.DebugLog
 import net.nemoria.quest.data.repo.QuestModelRepository
 import net.nemoria.quest.quest.*
 import java.util.concurrent.ConcurrentHashMap
@@ -21,11 +22,17 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
     private val cache: MutableMap<String, QuestModel> = ConcurrentHashMap()
 
     init {
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteQuestModelRepository.kt:23", "init entry", mapOf())
         loadAllToCache()
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteQuestModelRepository.kt:25", "init cache loaded", mapOf("cacheSize" to cache.size))
     }
 
     override fun findById(id: String): QuestModel? {
-        cache[id]?.let { return it }
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteQuestModelRepository.kt:27", "findById entry", mapOf("id" to id, "inCache" to cache.containsKey(id)))
+        cache[id]?.let {
+            DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteQuestModelRepository.kt:28", "findById found in cache", mapOf("id" to id))
+            return it
+        }
         dataSource.connection.use { conn ->
             conn.prepareStatement(
                 "SELECT name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators, description_placeholder, information_message, display_priority, default_status_item, permission_start_restriction, permission_start_command_restriction, world_restriction, command_restriction, cooldown FROM quest_model WHERE id = ?"
@@ -66,16 +73,22 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
                             cooldown = parseCooldown(rs.getString("cooldown"))
                         )
                         cache[id] = model
+                        DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteQuestModelRepository.kt:84", "findById found in database", mapOf("id" to id, "name" to model.name))
                         return model
                     }
                 }
             }
         }
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteQuestModelRepository.kt:89", "findById not found", mapOf("id" to id))
         return null
     }
 
     override fun findAll(): Collection<QuestModel> {
-        if (cache.isNotEmpty()) return cache.values
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteQuestModelRepository.kt:92", "findAll entry", mapOf("cacheSize" to cache.size))
+        if (cache.isNotEmpty()) {
+            DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteQuestModelRepository.kt:93", "findAll returning cache", mapOf("cacheSize" to cache.size))
+            return cache.values
+        }
         val list = mutableListOf<QuestModel>()
         dataSource.connection.use { conn ->
             conn.prepareStatement(
@@ -121,10 +134,12 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
                 }
             }
         }
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteQuestModelRepository.kt:139", "findAll completed", mapOf("count" to list.size, "cacheSize" to cache.size))
         return list
     }
 
     override fun save(model: QuestModel) {
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteQuestModelRepository.kt:142", "save entry", mapOf("questId" to model.id, "name" to model.name))
         dataSource.connection.use { conn ->
             conn.prepareStatement(
                 """
@@ -163,15 +178,18 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
                 ps.setString(28, gson.toJson(model.worldRestriction))
                 ps.setString(29, gson.toJson(model.commandRestriction))
                 ps.setString(30, gson.toJson(model.cooldown))
-                ps.executeUpdate()
+                val rows = ps.executeUpdate()
+                DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteQuestModelRepository.kt:181", "save completed", mapOf("questId" to model.id, "rowsAffected" to rows))
             }
         }
         cache[model.id] = model
     }
 
     private fun loadAllToCache() {
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteQuestModelRepository.kt:187", "loadAllToCache entry", mapOf("cacheSize" to cache.size))
         cache.clear()
         findAll()
+        DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteQuestModelRepository.kt:190", "loadAllToCache completed", mapOf("cacheSize" to cache.size))
     }
 
     private fun parseObjectives(raw: String?): List<QuestObjective> {
