@@ -28,9 +28,7 @@ class SqliteQuestModelRepository(private val dataSource: HikariDataSource) : Que
     }
 
     override fun findById(id: String): QuestModel? {
-        DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteQuestModelRepository.kt:27", "findById entry", mapOf("id" to id, "inCache" to cache.containsKey(id)))
         cache[id]?.let {
-            DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteQuestModelRepository.kt:28", "findById found in cache", mapOf("id" to id))
             return it
         }
         dataSource.connection.use { conn ->

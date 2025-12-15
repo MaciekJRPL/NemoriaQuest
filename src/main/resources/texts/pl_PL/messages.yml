@@ -51,7 +51,7 @@ scoreboard:
   no_objective: "<secondary>Brak celu"
   empty: "<secondary>Nie mam nic do wyświetlenia"
 diverge:
-  chat_hint: "<secondary>[ Przewiń kółkiem, aby zmienić opcję. Kliknij wiadomość lub lewy klik aby wybrać. ]"
+  chat_hint: "<secondary>Kliknij, aby wybrać"
 help:
   title: "\n<primary>NemoriaQuest <secondary>v{version} <dark>| <primary>Config <secondary>v{config}\n"
   lines:

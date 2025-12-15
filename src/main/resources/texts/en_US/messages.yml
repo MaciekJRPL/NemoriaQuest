@@ -51,7 +51,7 @@ scoreboard:
   no_objective: "<secondary>No objective"
   empty: "<secondary>Nothing to display"
 diverge:
-  chat_hint: "<secondary>[ Scroll to change option, click message or left-click to select ]"
+  chat_hint: "<secondary>Click to select"
 help:
   title: "\n<primary>NemoriaQuest <secondary>v{version} <dark>| <primary>Config <secondary>v{config}\n"
   lines:

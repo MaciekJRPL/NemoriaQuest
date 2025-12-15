@@ -1,2 +1,11 @@
 gui:
   main_title: "&aQuesty Nemoria"
+  controls:
+    start: "&ePPM: rozpocznij"
+    stop: "&cPPM: zakończ"
+    completed: "&aUkończone"
+  status:
+    completed: "&aUkończone"
+    in_progress: "&eW trakcie"
+    unavailable: "&cNiedostępne"
+    last_completion: "&7Ostatnio: {ts}"

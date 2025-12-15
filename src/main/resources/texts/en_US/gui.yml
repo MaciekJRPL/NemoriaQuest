@@ -1,2 +1,11 @@
 gui:
   main_title: "&aNemoria Quests"
+  controls:
+    start: "&eRMB: start"
+    stop: "&cRMB: stop"
+    completed: "&aCompleted"
+  status:
+    completed: "&aCompleted"
+    in_progress: "&eIn progress"
+    unavailable: "&cUnavailable"
+    last_completion: "&7Last: {ts}"

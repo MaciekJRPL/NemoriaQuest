@@ -26,9 +26,9 @@ class GuiManager {
         val inv = Bukkit.createInventory(holder, config.type.size, MessageFormatter.format(config.name))
         holder.inv = inv
         val all = Services.questService.listQuests()
-        val userData = Services.storage.userRepo.load(player.uniqueId)
-        val activeSet = userData.activeQuests
-        val completedSet = userData.completedQuests
+        val activeSet = Services.questService.activeQuests(player)
+        val completedSet = Services.questService.completedQuests(player)
+        val progressMap = Services.questService.progress(player)
         var shown = all.filter { !filterActive || activeSet.contains(it.id) }
         val allowedStatuses = config.showStatus.map { it.uppercase() }.toSet()
         if (allowedStatuses.isNotEmpty()) {
@@ -48,7 +48,7 @@ class GuiManager {
         pageItems.forEachIndexed { idx, model ->
             val slot = CONTENT_SLOTS.getOrNull(idx) ?: return@forEachIndexed
             val st = status(player, model, activeSet, completedSet)
-            val progress = userData.progress[model.id]
+            val progress = progressMap[model.id]
             inv.setItem(slot, questItem(player, model, st, progress))
         }
         inv.setItem(inv.size - 5, toggleItem(filterActive))
@@ -62,9 +62,9 @@ class GuiManager {
         val inv = Bukkit.createInventory(holder, config.type.size, MessageFormatter.format(config.name))
         holder.inv = inv
         val all = Services.questService.listQuests().filter { allowedQuestIds.contains(it.id) }
-        val userData = Services.storage.userRepo.load(player.uniqueId)
-        val activeSet = userData.activeQuests
-        val completedSet = userData.completedQuests
+        val activeSet = Services.questService.activeQuests(player)
+        val completedSet = Services.questService.completedQuests(player)
+        val progressMap = Services.questService.progress(player)
         var shown = all.filter { !filterActive || activeSet.contains(it.id) }
         val allowedStatuses = config.showStatus.map { it.uppercase() }.toSet()
         if (allowedStatuses.isNotEmpty()) {
@@ -83,7 +83,7 @@ class GuiManager {
         pageItems.forEachIndexed { idx, model ->
             val slot = CONTENT_SLOTS.getOrNull(idx) ?: return@forEachIndexed
             val st = status(player, model, activeSet, completedSet)
-            val progress = userData.progress[model.id]
+            val progress = progressMap[model.id]
             inv.setItem(slot, questItem(player, model, st, progress))
         }
         inv.setItem(inv.size - 5, toggleItem(filterActive))
@@ -251,13 +251,15 @@ class GuiManager {
             status: QuestStatusItemState,
             progress: QuestProgress?
         ): List<String> {
+            if (tpl?.lore?.isNotEmpty() == true) {
+                return tpl.lore
+                    .map { render(player, model, it, placeholders, progress) }
+                    .filter { it.isNotBlank() }
+            }
             val loreLines = mutableListOf<String>()
             model.description?.let { loreLines.add(MessageFormatter.format("<white>$it")) }
             placeholders["objective_detail"]?.takeIf { it.isNotBlank() }?.let {
                 loreLines.add(MessageFormatter.format("<light_purple>$it"))
-            }
-            if (tpl?.lore?.isNotEmpty() == true) {
-                loreLines.addAll(tpl.lore.map { render(player, model, it, placeholders, progress) })
             }
             loreLines.add(MessageFormatter.format(if (status == QuestStatusItemState.PROGRESS) "<green>Aktywny (PPM: stop)" else "<yellow>PPM: start, LPM: szczegóły"))
             return loreLines
@@ -265,11 +267,7 @@ class GuiManager {
 
         private fun currentObjectiveDetail(player: Player, model: QuestModel, progress: QuestProgress?): String? {
             if (model.branches.isEmpty()) return null
-            val branchId = progress?.currentBranchId ?: model.mainBranch ?: model.branches.keys.firstOrNull() ?: return null
-            val nodeId = progress?.currentNodeId ?: model.branches[branchId]?.startsAt ?: model.branches[branchId]?.objects?.keys?.firstOrNull()
-            val node = model.branches[branchId]?.objects?.get(nodeId) ?: return null
-            val desc = node.description ?: return null
-            return Services.questService.renderPlaceholders(desc, model.id, player)
+            return Services.questService.currentObjectiveDetail(player, model.id)
         }
     }
 }

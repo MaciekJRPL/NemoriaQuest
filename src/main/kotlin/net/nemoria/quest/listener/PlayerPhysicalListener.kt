@@ -107,6 +107,9 @@ class PlayerPhysicalListener : Listener {
 
     @EventHandler
     fun onWorldChange(event: PlayerChangedWorldEvent) {
+        if (Services.hasQuestService()) {
+            Services.questService.handlePlayerWorldChange(event.player)
+        }
         val mark = portalEnterMarks.remove(event.player.uniqueId)
         val isRecentPortal = mark != null && (System.currentTimeMillis() - mark) <= 10_000
         net.nemoria.quest.core.DebugLog.log(

@@ -25,6 +25,7 @@ object ChatHideService {
         allowOnce.remove(playerId)
         allowExact.remove(playerId)
         allowJson.remove(playerId)
+        buffered.remove(playerId)
         dialogPlayers.remove(playerId)
         ChatMessageDeduplicator.clear(playerId)
     }

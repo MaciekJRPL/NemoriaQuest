@@ -1,6 +1,7 @@
 package net.nemoria.quest.gui
 
 import net.nemoria.quest.core.DebugLog
+import net.nemoria.quest.core.MessageFormatter
 import net.nemoria.quest.core.Services
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
@@ -24,7 +25,39 @@ class GuiListener : Listener {
                 if (event.click.isRightClick) {
                     val active = Services.questService.activeQuests(player).contains(questId)
                     DebugLog.logToFile("debug-session", "run1", "GUI", "GuiListener.kt:22", "onClick right click", mapOf("playerUuid" to player.uniqueId.toString(), "questId" to questId, "active" to active))
-                    if (active) Services.questService.stopQuest(player, questId, complete = false) else Services.questService.startQuest(player, questId)
+                    if (active) {
+                        Services.questService.stopQuest(player, questId, complete = false)
+                        MessageFormatter.send(player, Services.i18n.msg("command.stop.stopped", mapOf("quest" to questId)))
+                    } else {
+                        val result = Services.questService.startQuest(player, questId, viaCommand = false)
+                        when (result) {
+                            net.nemoria.quest.quest.QuestService.StartResult.SUCCESS ->
+                                MessageFormatter.send(player, Services.i18n.msg("command.start.started", mapOf("quest" to questId)))
+                            net.nemoria.quest.quest.QuestService.StartResult.NOT_FOUND ->
+                                MessageFormatter.send(player, Services.i18n.msg("command.start.not_found", mapOf("quest" to questId)))
+                            net.nemoria.quest.quest.QuestService.StartResult.ALREADY_ACTIVE ->
+                                MessageFormatter.send(player, Services.i18n.msg("command.start.already_active", mapOf("quest" to questId)))
+                            net.nemoria.quest.quest.QuestService.StartResult.COMPLETION_LIMIT ->
+                                MessageFormatter.send(player, Services.i18n.msg("command.start.limit_reached", mapOf("quest" to questId)))
+                            net.nemoria.quest.quest.QuestService.StartResult.REQUIREMENT_FAIL ->
+                                MessageFormatter.send(player, Services.i18n.msg("command.start.requirements", mapOf("quest" to questId)))
+                            net.nemoria.quest.quest.QuestService.StartResult.CONDITION_FAIL ->
+                                MessageFormatter.send(player, Services.i18n.msg("command.start.conditions", mapOf("quest" to questId)))
+                            net.nemoria.quest.quest.QuestService.StartResult.WORLD_RESTRICTED ->
+                                MessageFormatter.send(player, Services.i18n.msg("command.start.world_restriction", mapOf("quest" to questId)))
+                            net.nemoria.quest.quest.QuestService.StartResult.COOLDOWN -> {
+                                val remaining = Services.questService.cooldownRemainingSeconds(player, questId)
+                                val timeFmt = Services.questService.formatDuration(remaining)
+                                MessageFormatter.send(player, Services.i18n.msg("command.start.cooldown", mapOf("quest" to questId, "time" to timeFmt)))
+                            }
+                            net.nemoria.quest.quest.QuestService.StartResult.PERMISSION_FAIL ->
+                                MessageFormatter.send(player, Services.i18n.msg("command.start.permission", mapOf("quest" to questId)))
+                            net.nemoria.quest.quest.QuestService.StartResult.OFFLINE ->
+                                MessageFormatter.send(player, Services.i18n.msg("command.player_only"))
+                            net.nemoria.quest.quest.QuestService.StartResult.INVALID_BRANCH ->
+                                MessageFormatter.send(player, Services.i18n.msg("command.start.invalid_branch", mapOf("quest" to questId)))
+                        }
+                    }
                     manager.openList(player, topHolder.config, topHolder.filterActive, topHolder.page)
                 } else if (event.click.isLeftClick) {
                     DebugLog.logToFile("debug-session", "run1", "GUI", "GuiListener.kt:26", "onClick left click", mapOf("playerUuid" to player.uniqueId.toString(), "questId" to questId))

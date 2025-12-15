@@ -14,7 +14,6 @@ import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
 import net.nemoria.quest.core.DebugLog
-import net.nemoria.quest.core.Services
 import net.nemoria.quest.runtime.ChatHideService
 import net.nemoria.quest.runtime.ChatHistoryManager
 import net.nemoria.quest.runtime.ChatMessageDeduplicator
@@ -28,8 +27,7 @@ class ChatHidePacketListener : PacketListenerAbstract(PacketListenerPriority.NOR
         val player = event.getPlayer<Player>() ?: return
         val id = player.uniqueId
         val hidden = ChatHideService.isHidden(id) ||
-            ChatHideService.isDialogActive(id) ||
-            Services.questService.hasDiverge(player)
+            ChatHideService.isDialogActive(id)
         if (!hidden) return
         val type = event.packetType ?: return
         val (component, json) = resolveComponent(type, event) ?: return
@@ -85,9 +83,8 @@ class ChatHidePacketListener : PacketListenerAbstract(PacketListenerPriority.NOR
     }
     override fun onPacketReceive(event: PacketReceiveEvent) {
         val player = event.getPlayer<Player>() ?: return
-        val hidden = ChatHideService.isHidden(player.uniqueId) || ChatHideService.isDialogActive(player.uniqueId)
-        val divergeAwaited = Services.questService.hasDiverge(player)
-        if (!hidden || divergeAwaited) return
+        val dialog = ChatHideService.isDialogActive(player.uniqueId)
+        if (!dialog) return
         val type = event.packetType ?: return
         if (isClientChat(type)) {
             event.isCancelled = true

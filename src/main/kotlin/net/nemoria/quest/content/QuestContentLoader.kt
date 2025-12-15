@@ -23,11 +23,30 @@ object QuestContentLoader {
         }
         val id = cfg.getString("id")?.takeIf { it.isNotBlank() } ?: file.nameWithoutExtension
         val name = cfg.getString("name") ?: id
-        val description = cfg.getString("description")
+        val descriptionRaw = cfg.get("description")
+        var description = cfg.getString("description")
         val descriptionPlaceholder = cfg.getString("description_placeholder")
         val informationMessage = cfg.getString("information_message")
         val displayName = cfg.getString("display_name")
-        val descriptionLines = cfg.getStringList("description_lines")
+        val descriptionLinesRaw = cfg.get("description_lines")
+        var descriptionLines = cfg.getStringList("description_lines")
+        if (descriptionLines.isEmpty()) {
+            descriptionLines = readStringListFlexibleKeepEmpty(descriptionLinesRaw)
+        }
+        when (descriptionRaw) {
+            is List<*> -> {
+                val lines = descriptionRaw.map { it?.toString() ?: "" }
+                if (description.isNullOrBlank()) description = lines.firstOrNull { it.isNotBlank() }
+                if (descriptionLines.isEmpty()) descriptionLines = lines
+            }
+            is String -> {
+                if (descriptionLines.isEmpty()) {
+                    val lines = descriptionRaw.lines()
+                    if (lines.size > 1) descriptionLines = lines
+                }
+                if (description.isNullOrBlank()) description = descriptionRaw.lines().firstOrNull { it.isNotBlank() }
+            }
+        }
         val displayPriority = if (cfg.contains("display_priority")) cfg.getInt("display_priority") else null
         val permissionStartRestriction = cfg.getString("permission_start_restriction")
         val permissionStartCommandRestriction = cfg.getString("permission_start_command_restriction")
@@ -113,14 +132,14 @@ object QuestContentLoader {
             val section = cfg.getConfigurationSection("status_items.$key") ?: return@mapNotNull null
             val type = section.getString("type") ?: return@mapNotNull null
             val nameItem = section.getString("name")
-            val lore = section.getStringList("lore")
+            val lore = readStringListFlexibleKeepEmpty(section.get("lore"))
             val cmd = if (section.contains("custom_model_data")) section.getInt("custom_model_data") else null
             state to StatusItemTemplate(type = type, name = nameItem, lore = lore, customModelData = cmd)
         }?.toMap() ?: emptyMap()
         val defaultStatusItem = cfg.getConfigurationSection("all_status_item")?.let { section ->
             val type = section.getString("type") ?: return@let null
             val nameItem = section.getString("name")
-            val lore = section.getStringList("lore")
+            val lore = readStringListFlexibleKeepEmpty(section.get("lore"))
             val cmd = if (section.contains("custom_model_data")) section.getInt("custom_model_data") else null
             StatusItemTemplate(type = type, name = nameItem, lore = lore, customModelData = cmd)
         }
@@ -168,9 +187,15 @@ object QuestContentLoader {
         }?.filterValues { it != null }?.mapValues { it.value!! } ?: emptyMap()
         val mainBranch = cfg.getString("main_branch")
         val endObjects = cfg.getConfigurationSection("end_objects")?.getKeys(false)?.associateWith { key ->
-            val listSec = cfg.getConfigurationSection("end_objects.$key") ?: return@associateWith emptyList<QuestEndObject>()
-            listSec.getKeys(false).mapNotNull { idx ->
-                parseEndObject(listSec.getConfigurationSection(idx))
+            val raw = cfg.get("end_objects.$key")
+            when (raw) {
+                is List<*> -> raw.mapNotNull { elem -> parseEndObjectAny(elem) }
+                else -> {
+                    val listSec = cfg.getConfigurationSection("end_objects.$key") ?: return@associateWith emptyList<QuestEndObject>()
+                    listSec.getKeys(false).mapNotNull { idx ->
+                        parseEndObject(listSec.getConfigurationSection(idx))
+                    }
+                }
             }
         } ?: emptyMap()
         val questModel = QuestModel(
@@ -314,7 +339,7 @@ object QuestContentLoader {
             )
         }
         val hideChat = sec.getBoolean("hide_chat", false)
-        val dialogMode = sec.getBoolean("dialog", false)
+        val dialogMode = false
         val npcId = sec.getInt("npc", -1).let { if (it >= 0) it else null }
         val npcNames = readStringListFlexible(sec.get("npc_names"))
         val clickTypes = sec.getStringList("click_types")
@@ -327,13 +352,31 @@ object QuestContentLoader {
         val waitForPlayerRadius = sec.getDouble("wait_for_player_radius", Double.NaN).let { if (it.isNaN()) null else it }
         val waitForPlayerNotify = parseNotify(sec.getConfigurationSection("wait_for_player_notify"))
         val waitForPlayerNotifyDelayTicks = sec.getString("wait_for_player_notify_delay")?.let { parseDurationSeconds(it) }?.times(20)
-        val choices = sec.getConfigurationSection("choices")?.getKeys(false)?.mapNotNull { key ->
-            val choiceSec = sec.getConfigurationSection("choices.$key") ?: return@mapNotNull null
-            val text = choiceSec.getString("text") ?: return@mapNotNull null
-            val redo = choiceSec.getString("redo_text")
-            val gotoChoice = choiceSec.getString("goto")
-            DivergeChoice(text = text, redoText = redo, goto = gotoChoice)
-        } ?: emptyList()
+        val choices = run {
+            val choicesSec = sec.getConfigurationSection("choices")
+            if (choicesSec != null) {
+                choicesSec.getKeys(false).mapNotNull { key ->
+                    val choiceSec = choicesSec.getConfigurationSection(key) ?: return@mapNotNull null
+                    val text = choiceSec.getString("text") ?: return@mapNotNull null
+                    val redo = choiceSec.getString("redo_text")
+                    val gotoChoice = choiceSec.getString("goto")
+                    DivergeChoice(text = text, redoText = redo, goto = gotoChoice)
+                }
+            } else {
+                val raw = sec.getList("choices") ?: return@run emptyList()
+                raw.mapNotNull { any ->
+                    when (any) {
+                        is Map<*, *> -> {
+                            val text = any["text"]?.toString() ?: return@mapNotNull null
+                            val redo = any["redo_text"]?.toString()
+                            val gotoChoice = any["goto"]?.toString()
+                            DivergeChoice(text = text, redoText = redo, goto = gotoChoice)
+                        }
+                        else -> null
+                    }
+                }
+            }
+        }
         val cases = sec.getConfigurationSection("cases")?.getKeys(false)?.mapNotNull { key ->
             val caseSec = sec.getConfigurationSection("cases.$key") ?: return@mapNotNull null
             val matchAmt = caseSec.getInt("match_amount", 1)
@@ -378,50 +421,18 @@ object QuestContentLoader {
             else -> false
         }
 
+        val goalsRaw = sec.get("goals")
+        val goalEntries = readGoalEntries(goalsRaw)
+
         val blockGoals = if (isPlayerBlockType) {
-            sec.getConfigurationSection("goals")?.getKeys(false)?.mapNotNull { key ->
-                val g = sec.getConfigurationSection("goals.$key") ?: return@mapNotNull null
-                BlockGoal(
-                    id = key,
-                    types = g.getStringList("types"),
-                    states = g.getStringList("states"),
-                    statesRequiredCount = g.getInt("states_required_count", Int.MAX_VALUE),
-                    goal = g.getDouble("goal", 1.0)
-                )
-            } ?: emptyList()
-        } else emptyList()
-        val itemGoals = if (isPlayerItemType) {
-            sec.getConfigurationSection("goals")?.getKeys(false)?.mapNotNull { key ->
-                val g = sec.getConfigurationSection("goals.$key") ?: return@mapNotNull null
-                val singleItem = g.getConfigurationSection("item")?.let { parseItemStackConfig(it) }
-                val itemsList = parseItemsList(g.get("items"))
-                val combined = when {
-                    singleItem != null -> listOf(singleItem)
-                    itemsList.isNotEmpty() -> itemsList
-                    else -> emptyList()
-                }
-                ItemGoal(
-                    id = key,
-                    items = combined,
-                    check = g.getString("check"),
-                    goal = g.getDouble("goal", 1.0),
-                    take = g.getBoolean("take", false)
-                )
-            } ?: emptyList()
+            goalEntries.mapNotNull { (goalId, any) -> parseBlockGoal(goalId, any) }
         } else emptyList()
 
-        val goals = if (!isPlayerEntityType) emptyList() else sec.getConfigurationSection("goals")?.getKeys(false)?.mapNotNull { key ->
-            val g = sec.getConfigurationSection("goals.$key") ?: return@mapNotNull null
-            EntityGoal(
-                types = g.getStringList("types"),
-                names = g.getStringList("names"),
-                colors = g.getStringList("colors"),
-                horseColors = g.getStringList("horse_colors"),
-                horseStyles = g.getStringList("horse_styles"),
-                goal = g.getDouble("goal", 1.0),
-                id = key
-            )
-        } ?: emptyList()
+        val itemGoals = if (isPlayerItemType) {
+            goalEntries.mapNotNull { (goalId, any) -> parseItemGoal(goalId, any) }
+        } else emptyList()
+
+        val goals = if (!isPlayerEntityType) emptyList() else goalEntries.mapNotNull { (goalId, any) -> parseEntityGoal(goalId, any) }
         val position = parsePosition(sec.getConfigurationSection("position"))
         val teleportPosition = parsePosition(sec.getConfigurationSection("teleport_position"))
         val damage = sec.getDouble("damage", Double.NaN).let { if (it.isNaN()) null else it }
@@ -600,6 +611,166 @@ object QuestContentLoader {
         }
     }
 
+    private fun readStringListFlexibleKeepEmpty(raw: Any?): List<String> {
+        return when (raw) {
+            null -> emptyList()
+            is List<*> -> raw.map { it?.toString() ?: "" }
+            is String -> raw.lines()
+            else -> emptyList()
+        }
+    }
+
+    private fun readGoalEntries(raw: Any?): List<Pair<String, Any?>> {
+        return when (raw) {
+            null -> emptyList()
+            is org.bukkit.configuration.ConfigurationSection -> raw.getKeys(false).mapNotNull { key ->
+                val child = raw.getConfigurationSection(key) ?: raw.get(key)
+                child?.let { key to it }
+            }
+            is List<*> -> raw.mapIndexedNotNull { idx, elem ->
+                val id = goalIdForIndex(idx)
+                elem?.let { id to it }
+            }
+            else -> emptyList()
+        }
+    }
+
+    private fun goalIdForIndex(idx: Int): String {
+        var i = idx
+        val sb = StringBuilder()
+        do {
+            val rem = i % 26
+            sb.append(('a'.code + rem).toChar())
+            i = (i / 26) - 1
+        } while (i >= 0)
+        return sb.reverse().toString()
+    }
+
+    private fun parseBlockGoal(id: String, any: Any?): BlockGoal? {
+        return when (any) {
+            is org.bukkit.configuration.ConfigurationSection -> {
+                BlockGoal(
+                    id = id,
+                    types = any.getStringList("types"),
+                    states = any.getStringList("states"),
+                    statesRequiredCount = any.getInt("states_required_count", Int.MAX_VALUE),
+                    goal = any.getDouble("goal", 1.0)
+                )
+            }
+            is Map<*, *> -> {
+                BlockGoal(
+                    id = id,
+                    types = readStringListAny(any["types"]),
+                    states = readStringListAny(any["states"]),
+                    statesRequiredCount = any["states_required_count"]?.toString()?.toIntOrNull() ?: Int.MAX_VALUE,
+                    goal = any["goal"]?.toString()?.toDoubleOrNull() ?: 1.0
+                )
+            }
+            else -> null
+        }
+    }
+
+    private fun parseItemGoal(id: String, any: Any?): ItemGoal? {
+        return when (any) {
+            is org.bukkit.configuration.ConfigurationSection -> {
+                val singleItem = any.getConfigurationSection("item")?.let { parseItemStackConfig(it) }
+                val itemsList = parseItemsList(any.get("items"))
+                val combined = when {
+                    singleItem != null -> listOf(singleItem)
+                    itemsList.isNotEmpty() -> itemsList
+                    else -> emptyList()
+                }
+                ItemGoal(
+                    id = id,
+                    items = combined,
+                    check = any.getString("check"),
+                    goal = any.getDouble("goal", 1.0),
+                    take = any.getBoolean("take", false)
+                )
+            }
+            is Map<*, *> -> {
+                val singleItem = parseItemStackConfigAny(any["item"])
+                val itemsList = parseItemsList(any["items"])
+                val combined = when {
+                    singleItem != null -> listOf(singleItem)
+                    itemsList.isNotEmpty() -> itemsList
+                    else -> emptyList()
+                }
+                ItemGoal(
+                    id = id,
+                    items = combined,
+                    check = any["check"]?.toString(),
+                    goal = any["goal"]?.toString()?.toDoubleOrNull() ?: 1.0,
+                    take = readBooleanAny(any["take"]) ?: false
+                )
+            }
+            else -> null
+        }
+    }
+
+    private fun parseEntityGoal(id: String, any: Any?): EntityGoal? {
+        return when (any) {
+            is org.bukkit.configuration.ConfigurationSection -> {
+                EntityGoal(
+                    types = any.getStringList("types"),
+                    names = any.getStringList("names"),
+                    colors = any.getStringList("colors"),
+                    horseColors = any.getStringList("horse_colors"),
+                    horseStyles = any.getStringList("horse_styles"),
+                    goal = any.getDouble("goal", 1.0),
+                    id = id
+                )
+            }
+            is Map<*, *> -> {
+                EntityGoal(
+                    types = readStringListAny(any["types"]),
+                    names = readStringListAny(any["names"]),
+                    colors = readStringListAny(any["colors"]),
+                    horseColors = readStringListAny(any["horse_colors"]),
+                    horseStyles = readStringListAny(any["horse_styles"]),
+                    goal = any["goal"]?.toString()?.toDoubleOrNull() ?: 1.0,
+                    id = id
+                )
+            }
+            else -> null
+        }
+    }
+
+    private fun readStringListAny(raw: Any?): List<String> {
+        return when (raw) {
+            null -> emptyList()
+            is List<*> -> raw.mapNotNull { it?.toString() }
+            is String -> raw.split(',').map { it.trim() }.filter { it.isNotBlank() }
+            else -> emptyList()
+        }
+    }
+
+    private fun readBooleanAny(raw: Any?): Boolean? {
+        return when (raw) {
+            null -> null
+            is Boolean -> raw
+            is String -> raw.trim().toBooleanStrictOrNull()
+            is Number -> raw.toInt() != 0
+            else -> null
+        }
+    }
+
+    private fun parseItemStackConfigAny(raw: Any?): ItemStackConfig? {
+        return when (raw) {
+            null -> null
+            is org.bukkit.configuration.ConfigurationSection -> parseItemStackConfig(raw)
+            is Map<*, *> -> {
+                val type = raw["type"]?.toString() ?: return null
+                val name = raw["name"]?.toString()
+                val lore = (raw["lore"] as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList()
+                val cmd = raw["custom_model_data"]?.toString()?.toIntOrNull()
+                val potionType = raw["potion_type"]?.toString()
+                ItemStackConfig(type = type, name = name, lore = lore, customModelData = cmd, potionType = potionType)
+            }
+            else -> null
+        }
+    }
+
     private fun parseConditionContainer(raw: Any?, section: org.bukkit.configuration.ConfigurationSection?): List<ConditionEntry> {
         val fromList = (raw as? List<*>)?.mapNotNull { parseCondition(it) } ?: emptyList()
         if (fromList.isNotEmpty()) return fromList
@@ -704,6 +875,40 @@ object QuestContentLoader {
             sound = sound,
             title = title
         )
+    }
+
+    private fun parseEndObjectAny(any: Any?): QuestEndObject? {
+        return when (any) {
+            is org.bukkit.configuration.ConfigurationSection -> parseEndObject(any)
+            is Map<*, *> -> {
+                val typeRaw = any["type"]?.toString()?.uppercase() ?: return null
+                val type = runCatching { QuestEndObjectType.valueOf(typeRaw) }.getOrNull() ?: return null
+                val actions = (any["actions"] as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList()
+                val commands = (any["commands"] as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList()
+                val currency = any["currency"]?.toString()
+                val valueFormula = any["value_formula"]?.toString()
+                val sound = any["sound"]?.toString()
+                val title = (any["title"] as? Map<*, *>)?.let { t ->
+                    TitleSettings(
+                        fadeIn = t["fade_in"]?.toString()?.toIntOrNull() ?: 10,
+                        stay = t["stay"]?.toString()?.toIntOrNull() ?: 60,
+                        fadeOut = t["fade_out"]?.toString()?.toIntOrNull() ?: 10,
+                        title = t["title"]?.toString(),
+                        subtitle = t["subtitle"]?.toString()
+                    )
+                }
+                QuestEndObject(
+                    type = type,
+                    actions = actions,
+                    commands = commands,
+                    currency = currency,
+                    valueFormula = valueFormula,
+                    sound = sound,
+                    title = title
+                )
+            }
+            else -> null
+        }
     }
 
     private fun parseItemStackConfig(sec: org.bukkit.configuration.ConfigurationSection?): ItemStackConfig? {

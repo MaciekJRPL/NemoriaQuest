@@ -6,17 +6,24 @@ import java.io.InputStreamReader
 
 class I18n(private val locale: String, private val fallback: String = "en_US") {
     private val messages: Map<String, String>
-    private val primaryCfg: YamlConfiguration?
-    private val fallbackCfg: YamlConfiguration?
+    private val primaryCfgs: List<YamlConfiguration>
+    private val fallbackCfgs: List<YamlConfiguration>
 
     init {
-        val primary = loadBundle("texts/$locale/messages.yml")
-        val fb = if (locale != fallback) loadBundle("texts/$fallback/messages.yml") else null
-        val primaryMap = primary?.let { flatten(it, "") } ?: emptyMap()
-        val fbMap = fb?.let { flatten(it, "") } ?: emptyMap()
+        val primaryMessages = loadBundle("texts/$locale/messages.yml")
+        val primaryGui = loadBundle("texts/$locale/gui.yml")
+        val fbMessages = if (locale != fallback) loadBundle("texts/$fallback/messages.yml") else null
+        val fbGui = if (locale != fallback) loadBundle("texts/$fallback/gui.yml") else null
+
+        val primaryList = listOfNotNull(primaryMessages, primaryGui)
+        val fbList = listOfNotNull(fbMessages, fbGui)
+
+        val primaryMap = primaryList.fold(emptyMap<String, String>()) { acc, cfg -> acc + flatten(cfg, "") }
+        val fbMap = fbList.fold(emptyMap<String, String>()) { acc, cfg -> acc + flatten(cfg, "") }
+
         messages = fbMap + primaryMap
-        primaryCfg = primary
-        fallbackCfg = fb
+        primaryCfgs = primaryList
+        fallbackCfgs = fbList
     }
 
     fun msg(key: String, placeholders: Map<String, String> = emptyMap()): String {
@@ -25,10 +32,15 @@ class I18n(private val locale: String, private val fallback: String = "en_US") {
     }
 
     fun msgList(key: String): List<String> {
-        val primaryList = primaryCfg?.getStringList(key)?.takeIf { it.isNotEmpty() }
-        if (primaryList != null) return primaryList
-        val fallbackList = fallbackCfg?.getStringList(key)?.takeIf { it.isNotEmpty() }
-        return fallbackList ?: emptyList()
+        for (cfg in primaryCfgs) {
+            val list = cfg.getStringList(key).takeIf { it.isNotEmpty() }
+            if (list != null) return list
+        }
+        for (cfg in fallbackCfgs) {
+            val list = cfg.getStringList(key).takeIf { it.isNotEmpty() }
+            if (list != null) return list
+        }
+        return emptyList()
     }
 
     private fun loadBundle(path: String): YamlConfiguration? {

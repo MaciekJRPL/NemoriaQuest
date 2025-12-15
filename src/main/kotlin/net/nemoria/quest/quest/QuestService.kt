@@ -14,6 +14,7 @@ import org.bukkit.plugin.java.JavaPlugin
 import org.bukkit.scheduler.BukkitRunnable
 import org.bukkit.scheduler.BukkitTask
 import net.nemoria.quest.runtime.BranchRuntimeManager
+import net.nemoria.quest.runtime.ParticleScriptEngine
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import net.nemoria.quest.data.user.GroupProgress
@@ -54,7 +55,7 @@ class QuestService(
         val requiredGuiQuests: Int?
     )
 
-    private data class ActivatorDialogState(var idx: Int, var lastAtMs: Long)
+    private data class ActivatorDialogState(var idx: Int, var lastAtMs: Long, var questId: String)
 
     private var citizensNpcActivatorConfig: Map<Int, CitizensNpcActivatorConfig> = emptyMap()
     private var citizensNpcAutoStartIds: Set<Int> = emptySet()
@@ -68,8 +69,45 @@ class QuestService(
     private val activatorDialogResetTasks: MutableMap<UUID, MutableMap<Int, BukkitTask>> = ConcurrentHashMap()
     private val lastActivatorMoveCheckAtMs: MutableMap<UUID, Long> = ConcurrentHashMap()
     private val lastActivatorMoveBlockKey: MutableMap<UUID, Long> = ConcurrentHashMap()
-    private val lastActivatorParticleAtMs: MutableMap<UUID, MutableMap<Int, Long>> = ConcurrentHashMap()
-    private val lastActivatorParticleStatus: MutableMap<UUID, MutableMap<Int, String>> = ConcurrentHashMap()
+
+    private data class ActivatorParticleRun(
+        val status: String,
+        val scriptId: String,
+        val handle: ParticleScriptEngine.Handle
+    )
+
+    private val activatorParticleRuns: MutableMap<UUID, MutableMap<Int, ActivatorParticleRun>> = ConcurrentHashMap()
+
+    private fun clearActivatorParticleRuns(playerId: UUID) {
+        val perNpc = activatorParticleRuns.remove(playerId) ?: return
+        perNpc.values.forEach { run ->
+            branchRuntime.stopParticleScript(run.handle)
+        }
+    }
+
+    internal fun handlePlayerWorldChange(player: Player) {
+        clearActivatorParticleRuns(player.uniqueId)
+    }
+
+    private fun clearActivatorDialogState(playerId: UUID) {
+        activatorDialogStates.remove(playerId)
+        activatorDialogResetTasks.remove(playerId)?.values?.forEach { it.cancel() }
+        lastActivatorMoveCheckAtMs.remove(playerId)
+        lastActivatorMoveBlockKey.remove(playerId)
+    }
+
+    private fun clearActivatorParticleRunsForQuest(playerId: UUID, questId: String) {
+        val perNpc = activatorParticleRuns[playerId] ?: return
+        val it = perNpc.entries.iterator()
+        while (it.hasNext()) {
+            val (npcId, run) = it.next()
+            val cfg = citizensNpcActivatorConfig[npcId] ?: continue
+            if (!cfg.questIds.contains(questId)) continue
+            branchRuntime.stopParticleScript(run.handle)
+            it.remove()
+        }
+        if (perNpc.isEmpty()) activatorParticleRuns.remove(playerId)
+    }
 
     private var citizensRegistry: Any? = null
     private var citizensGetByIdMethod: Method? = null
@@ -149,8 +187,7 @@ class QuestService(
         activatorDialogResetTasks.clear()
         lastActivatorMoveCheckAtMs.clear()
         lastActivatorMoveBlockKey.clear()
-        lastActivatorParticleAtMs.clear()
-        lastActivatorParticleStatus.clear()
+        activatorParticleRuns.clear()
         citizensRegistry = null
         citizensGetByIdMethod = null
         citizensNpcGetEntityMethod = null
@@ -268,7 +305,30 @@ class QuestService(
             return
         }
 
-        if (cfg.dialog.isEmpty()) {
+        val data = data(player)
+        if (cfg.questIds.any { data.activeQuests.contains(it) }) {
+            activatorDialogStates[player.uniqueId]?.remove(npcId)
+            cancelActivatorDialogReset(player.uniqueId, npcId)
+            openActivatorGuiIfAllowed(player, cfg)
+            return
+        }
+
+        val dialogModel = run {
+            for (questId in cfg.questIds) {
+                val model = questRepo.findById(questId) ?: continue
+                if (checkStartQuest(player, questId, model, data, viaCommand = false) == StartResult.SUCCESS) return@run model
+            }
+            null
+        }
+        if (dialogModel == null) {
+            activatorDialogStates[player.uniqueId]?.remove(npcId)
+            cancelActivatorDialogReset(player.uniqueId, npcId)
+            openActivatorGuiIfAllowed(player, cfg)
+            return
+        }
+
+        val dialog = dialogModel.activatorsDialog
+        if (dialog.isEmpty()) {
             openActivatorGuiIfAllowed(player, cfg)
             return
         }
@@ -276,28 +336,39 @@ class QuestService(
         val now = System.currentTimeMillis()
         val byNpc = activatorDialogStates.computeIfAbsent(player.uniqueId) { ConcurrentHashMap() }
         val state = byNpc[npcId]
-
-        if (state != null && shouldResetActivatorDialog(player, npcId, cfg, state, now)) {
+        if (state != null && state.questId != dialogModel.id) {
             byNpc.remove(npcId)
-            cfg.resetNotify?.let { sendNotifySimple(player, it) }
+            cancelActivatorDialogReset(player.uniqueId, npcId)
+        }
+        val stateAfterQuestPick = byNpc[npcId]
+
+        if (stateAfterQuestPick != null && shouldResetActivatorDialog(dialogModel.activatorsDialogResetDelaySeconds, stateAfterQuestPick, now)) {
+            byNpc.remove(npcId)
+            dialogModel.activatorsDialogResetNotify?.let { sendNotifySimple(player, it) }
         }
 
-        val current = byNpc.computeIfAbsent(npcId) { ActivatorDialogState(idx = 0, lastAtMs = now) }
-        if (current.idx >= cfg.dialog.size) {
+        val current = byNpc.computeIfAbsent(npcId) { ActivatorDialogState(idx = 0, lastAtMs = now, questId = dialogModel.id) }
+        if (current.idx >= dialog.size) {
             byNpc.remove(npcId)
             cancelActivatorDialogReset(player.uniqueId, npcId)
             openActivatorGuiIfAllowed(player, cfg)
             return
         }
 
-        val line = cfg.dialog.getOrNull(current.idx) ?: run {
-            current.idx = cfg.dialog.size
+        val line = dialog.getOrNull(current.idx) ?: run {
+            current.idx = dialog.size
             current.lastAtMs = now
             return
         }
         current.idx += 1
         current.lastAtMs = now
-        scheduleActivatorDialogReset(player.uniqueId, npcId, cfg, current.lastAtMs)
+        scheduleActivatorDialogReset(
+            player.uniqueId,
+            npcId,
+            delaySeconds = dialogModel.activatorsDialogResetDelaySeconds,
+            resetNotify = dialogModel.activatorsDialogResetNotify,
+            lastAtMs = current.lastAtMs
+        )
         if (line.isBlank()) return
         MessageFormatter.send(player, line)
     }
@@ -311,14 +382,8 @@ class QuestService(
         }
     }
 
-    private fun shouldResetActivatorDialog(
-        player: Player,
-        npcId: Int,
-        cfg: CitizensNpcActivatorConfig,
-        state: ActivatorDialogState,
-        nowMs: Long
-    ): Boolean {
-        val delay = cfg.resetDelaySeconds
+    private fun shouldResetActivatorDialog(resetDelaySeconds: Long?, state: ActivatorDialogState, nowMs: Long): Boolean {
+        val delay = resetDelaySeconds
         return delay != null && nowMs - state.lastAtMs >= delay * 1000L
     }
 
@@ -371,10 +436,8 @@ class QuestService(
         val centerChunkZ = to.blockZ shr 4
         val playerLoc = player.location
         val particlesRangeSq = citizensActivatorParticlesRange * citizensActivatorParticlesRange
-        val particleAt = lastActivatorParticleAtMs.computeIfAbsent(player.uniqueId) { ConcurrentHashMap() }
-        val particleStatus = lastActivatorParticleStatus.computeIfAbsent(player.uniqueId) { ConcurrentHashMap() }
-        val particleCooldownMs = 1500L
         val dataForParticles = if (hasParticles) data(player) else null
+        val runsByNpc = activatorParticleRuns.computeIfAbsent(player.uniqueId) { ConcurrentHashMap() }
         for (dx in -chunkRadius..chunkRadius) {
             for (dz in -chunkRadius..chunkRadius) {
                 val key = makeChunkKey(centerChunkX + dx, centerChunkZ + dz)
@@ -389,13 +452,38 @@ class QuestService(
                     if (hasAutoStart && citizensNpcAutoStartIds.contains(npcId) && !perNpc.containsKey(npcId)) {
                         val dist = cfg.autoStartDistance ?: return@forEach
                         if (distSq <= dist * dist) {
-                            val st = perNpc.computeIfAbsent(npcId) { ActivatorDialogState(idx = 0, lastAtMs = now) }
-                            if (st.idx >= cfg.dialog.size) return@forEach
-                            val line = cfg.dialog.getOrNull(st.idx) ?: return@forEach
+                            val dataForDialog = data(player)
+                            if (cfg.questIds.any { dataForDialog.activeQuests.contains(it) }) return@forEach
+                            val modelForDialog = run {
+                                for (questId in cfg.questIds) {
+                                    val model = questRepo.findById(questId) ?: continue
+                                    if (checkStartQuest(player, questId, model, dataForDialog, viaCommand = false) == StartResult.SUCCESS) return@run model
+                                }
+                                null
+                            } ?: return@forEach
+                            val dialog = modelForDialog.activatorsDialog
+                            if (dialog.isEmpty()) return@forEach
+
+                            val existing = perNpc[npcId]
+                            val st = when {
+                                existing == null || existing.questId != modelForDialog.id -> {
+                                    cancelActivatorDialogReset(player.uniqueId, npcId)
+                                    ActivatorDialogState(idx = 0, lastAtMs = now, questId = modelForDialog.id).also { perNpc[npcId] = it }
+                                }
+                                else -> existing
+                            }
+                            if (st.idx >= dialog.size) return@forEach
+                            val line = dialog.getOrNull(st.idx) ?: return@forEach
                             st.idx += 1
                             st.lastAtMs = now
-                            scheduleActivatorDialogReset(player.uniqueId, npcId, cfg, st.lastAtMs)
-                            if (!line.isBlank()) MessageFormatter.send(player, line)
+                            scheduleActivatorDialogReset(
+                                player.uniqueId,
+                                npcId,
+                                delaySeconds = modelForDialog.activatorsDialogResetDelaySeconds,
+                                resetNotify = modelForDialog.activatorsDialogResetNotify,
+                                lastAtMs = st.lastAtMs
+                            )
+                            if (line.isNotBlank()) MessageFormatter.send(player, line)
                         }
                     }
 
@@ -418,16 +506,33 @@ class QuestService(
                                 "AVAILABLE" -> cfg.particlesAvailableScript
                                 else -> null
                             }
-                            if (!scriptId.isNullOrBlank()) {
-                                val lastAt = particleAt[npcId] ?: 0L
-                                val lastSt = particleStatus[npcId]
-                                if (lastSt != desiredStatus || now - lastAt >= particleCooldownMs) {
-                                    val loc = npcEntity.location.clone().add(0.0, cfg.particlesVerticalOffset, 0.0)
-                                    branchRuntime.performParticleScriptAtLocation(player, scriptId, loc)
-                                    particleAt[npcId] = now
-                                    particleStatus[npcId] = desiredStatus
-                                }
+                            if (scriptId.isNullOrBlank()) return@forEach
+
+                            val existing = runsByNpc[npcId]
+                            if (existing != null && existing.status == desiredStatus && existing.scriptId == scriptId) {
+                                if (branchRuntime.isParticleScriptActive(existing.handle)) return@forEach
+                                runsByNpc.remove(npcId)
+                                // Script is not active, will create new one below
+                            } else if (existing != null) {
+                                // Different status or script, stop the old one
+                                branchRuntime.stopParticleScript(existing.handle)
+                                runsByNpc.remove(npcId)
                             }
+
+                            val npcUuid = npcEntity.uniqueId
+                            val npcWorld = npcEntity.world
+                            val offsetY = cfg.particlesVerticalOffset
+                            val viewerId = player.uniqueId
+                            val provider = provider@{
+                                val p = plugin.server.getPlayer(viewerId) ?: return@provider null
+                                val e = npcWorld.getEntity(npcUuid) ?: return@provider null
+                                if (p.world != npcWorld) return@provider null
+                                if (p.location.distanceSquared(e.location) > particlesRangeSq) return@provider null
+                                e.location.clone().add(0.0, offsetY, 0.0)
+                            }
+
+                            val handle = branchRuntime.startParticleScriptLoopAtLocation(player, scriptId, provider) ?: return@forEach
+                            runsByNpc[npcId] = ActivatorParticleRun(desiredStatus, scriptId, handle)
                         }
                     }
                 }
@@ -470,8 +575,8 @@ class QuestService(
         return StartResult.SUCCESS
     }
 
-    private fun scheduleActivatorDialogReset(playerId: UUID, npcId: Int, cfg: CitizensNpcActivatorConfig, lastAtMs: Long) {
-        val delaySeconds = cfg.resetDelaySeconds ?: return
+    private fun scheduleActivatorDialogReset(playerId: UUID, npcId: Int, delaySeconds: Long?, resetNotify: NotifySettings?, lastAtMs: Long) {
+        val delay = delaySeconds ?: return
         val perPlayer = activatorDialogResetTasks.computeIfAbsent(playerId) { ConcurrentHashMap() }
         perPlayer[npcId]?.cancel()
         perPlayer[npcId] = plugin.server.scheduler.runTaskLater(plugin, Runnable {
@@ -480,8 +585,8 @@ class QuestService(
             activatorDialogStates[playerId]?.remove(npcId)
             cancelActivatorDialogReset(playerId, npcId)
             val player = plugin.server.getPlayer(playerId) ?: return@Runnable
-            cfg.resetNotify?.let { sendNotifySimple(player, it) }
-        }, delaySeconds * 20L)
+            resetNotify?.let { sendNotifySimple(player, it) }
+        }, delay * 20L)
     }
 
     private fun cancelActivatorDialogReset(playerId: UUID, npcId: Int) {
@@ -694,6 +799,7 @@ class QuestService(
         markDirty(player)
         cancelQuestTimeLimit(player, questId)
         cancelObjectiveTimers(player, questId)
+        clearActivatorParticleRunsForQuest(player.uniqueId, questId)
         DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:184", "stopQuest stopping branchRuntime", mapOf("questId" to questId))
         branchRuntime.stop(player)
     }
@@ -707,13 +813,11 @@ class QuestService(
         return java.util.LinkedHashSet(sorted)
     }
 
+    fun completedQuests(player: OfflinePlayer): Set<String> {
+        return data(player).completedQuests.toSet()
+    }
+
     fun hasDiverge(player: OfflinePlayer): Boolean = branchRuntime.hasDiverge(player)
-
-    fun scrollDiverge(player: org.bukkit.entity.Player, delta: Int) =
-        branchRuntime.scrollDiverge(player, delta)
-
-    fun acceptCurrentDiverge(player: org.bukkit.entity.Player) =
-        branchRuntime.acceptCurrentDiverge(player)
 
     fun progress(player: OfflinePlayer): Map<String, QuestProgress> =
         data(player).progress.toMap()
@@ -1144,6 +1248,10 @@ class QuestService(
         return branchRuntime.handleNpcInteract(player, npcId, npcName, clickType)
     }
 
+    fun shouldBlockCitizensNpcActivator(player: Player, npcId: Int, npcName: String?): Boolean {
+        return branchRuntime.shouldBlockCitizensNpcActivator(player, npcId, npcName)
+    }
+
     fun branchRuntimeHandleNpcKill(player: Player, npcId: Int, npcName: String?): Boolean {
         return branchRuntime.handleNpcKill(player, npcId, npcName)
     }
@@ -1231,6 +1339,10 @@ class QuestService(
         kind: net.nemoria.quest.runtime.BranchRuntimeManager.MiscEventType,
         detail: String? = null
     ): Boolean {
+        if (kind == net.nemoria.quest.runtime.BranchRuntimeManager.MiscEventType.DISCONNECT) {
+            clearActivatorParticleRuns(player.uniqueId)
+            clearActivatorDialogState(player.uniqueId)
+        }
         return branchRuntime.handleMiscEvent(player, kind, detail)
     }
 
@@ -1320,17 +1432,29 @@ class QuestService(
         val node = model.branches[branchId]?.objects?.get(nodeId) ?: return null
         val desc = node.description ?: return null
         val base = renderPlaceholders(desc, questId, player)
+        val goalById = when {
+            node.blockGoals.isNotEmpty() -> node.blockGoals.associate { (it.id.ifBlank { "default" }) to it.goal }
+            node.itemGoals.isNotEmpty() -> node.itemGoals.associate { (it.id.ifBlank { "default" }) to it.goal }
+            node.goals.isNotEmpty() -> node.goals.associate { (it.id.ifBlank { "default" }) to it.goal }
+            else -> emptyMap()
+        }
+        val progressById = if (goalById.isNotEmpty()) loadNodeGoalProgress(player, questId, branchId, node.id) else emptyMap()
         val progressVal = run {
             val goals = prioritizedGoals(node)
             if (goals.isNotEmpty()) {
-                val goalsMap = loadNodeGoalProgress(player, questId, branchId, node.id)
-                if (goalsMap.isNotEmpty()) goalsMap.values.sum() else loadNodeProgress(player, questId, branchId, node.id)
+                if (progressById.isNotEmpty()) progressById.values.sum() else loadNodeProgress(player, questId, branchId, node.id)
             } else {
                 loadNodeProgress(player, questId, branchId, node.id)
             }
         }
         val goalVal = goalValue(node)
         return base
+            .replace("\\{objective_progression:([A-Za-z0-9_]+)}".toRegex()) { m ->
+                fmtNumber(progressById[m.groupValues[1]] ?: 0.0)
+            }
+            .replace("\\{objective_goal:([A-Za-z0-9_]+)}".toRegex()) { m ->
+                fmtNumber(goalById[m.groupValues[1]] ?: 0.0)
+            }
             .replace("{progress}", fmtNumber(progressVal))
             .replace("{goal}", fmtNumber(goalVal))
     }

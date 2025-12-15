@@ -184,6 +184,8 @@ class NemoriaQuestPlugin : JavaPlugin() {
         server.pluginManager.registerEvents(PlayerMoveListener(), this)
         server.pluginManager.registerEvents(PlayerPhysicalListener(), this)
         server.pluginManager.registerEvents(PlayerMiscListener(), this)
+        server.pluginManager.registerEvents(QuestListeners(), this)
+        server.pluginManager.registerEvents(BranchInteractListener(), this)
         net.nemoria.quest.runtime.ChatHideService.clear()
         net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:191", "reloadAll completed", mapOf())
         return true

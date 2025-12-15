@@ -16,7 +16,6 @@ import org.bukkit.NamespacedKey
 import org.bukkit.OfflinePlayer
 import org.bukkit.Particle
 import org.bukkit.Sound
-import org.bukkit.configuration.file.YamlConfiguration
 import org.bukkit.entity.AbstractHorse
 import org.bukkit.entity.Horse
 import org.bukkit.entity.Sheep
@@ -40,17 +39,25 @@ class BranchRuntimeManager(
 ) {
     private val sessions: MutableMap<UUID, BranchSession> = ConcurrentHashMap()
     private val divergeSessions: MutableMap<UUID, DivergeChatSession> = mutableMapOf()
+
+    private data class DialogRestoreState(
+        val originalHistory: List<Component>,
+        val baselineSeq: Long
+    )
+
+    private val persistentDialogStates: MutableMap<UUID, DialogRestoreState> = ConcurrentHashMap()
+    private val dialogScreens: MutableMap<UUID, MutableList<Component>> = ConcurrentHashMap()
+
     private val pendingPrompts: MutableMap<String, ActionContinuation> = mutableMapOf()
     private val pendingSneaks: MutableMap<UUID, ActionContinuation> = mutableMapOf()
     private val pendingNavigations: MutableMap<UUID, ActionContinuation> = mutableMapOf()
-    private val particleScripts: MutableMap<String, ParticleScript> = java.util.concurrent.ConcurrentHashMap()
+    private val particleScriptEngine = ParticleScriptEngine(plugin)
     private val guiSessions: MutableMap<UUID, DivergeGuiSession> = mutableMapOf()
     private val gson = GsonComponentSerializer.gson()
     private val legacySerializer = LegacyComponentSerializer.legacySection()
     private val historyNewline = Component.newline()
 
     companion object {
-        private const val GREY_HISTORY_LIMIT = 40
         private fun progressKey(branchId: String, nodeId: String): String = "$branchId:$nodeId"
     }
 
@@ -270,6 +277,10 @@ class BranchRuntimeManager(
         pendingSneaks.remove(player.uniqueId)
         pendingNavigations.remove(player.uniqueId)
         pendingPrompts.entries.removeIf { it.value.playerId == player.uniqueId }
+        if (persistentDialogStates.remove(player.uniqueId) != null) {
+            dialogScreens.remove(player.uniqueId)
+            ChatHideService.endDialog(player.uniqueId)
+        }
     }
 
     private fun trackTask(playerId: UUID, task: org.bukkit.scheduler.BukkitTask) {
@@ -287,10 +298,13 @@ class BranchRuntimeManager(
         }
         sessions.clear()
         divergeSessions.clear()
+        persistentDialogStates.clear()
+        dialogScreens.clear()
         pendingPrompts.clear()
         pendingSneaks.clear()
         pendingNavigations.clear()
         guiSessions.clear()
+        particleScriptEngine.shutdown()
         DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:323", "shutdown completed", mapOf())
     }
 
@@ -326,6 +340,10 @@ class BranchRuntimeManager(
         if (p == null) {
             DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:315", "executeNode player offline", mapOf("questId" to model.id, "nodeId" to node.id))
             return
+        }
+        if (persistentDialogStates.containsKey(p.uniqueId) && node.type != QuestObjectNodeType.DIVERGE_DIALOG_UNSET) {
+            dialogScreens[p.uniqueId]?.clear()
+            clearChatWindow(p, 100)
         }
         val hadDiverge = divergeSessions.remove(player.uniqueId) != null
         DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:363", "executeNode removed diverge session", mapOf("questId" to model.id, "nodeId" to node.id, "hadDiverge" to hadDiverge))
@@ -635,29 +653,37 @@ class BranchRuntimeManager(
                 DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:632", "executeNode SERVER_CITIZENS_NPC_TELEPORT", mapOf("questId" to model.id, "nodeId" to node.id, "npcId" to (node.npcId ?: "null")))
                 executeCitizensTeleport(player, model, branchId, node)
             }
+            QuestObjectNodeType.DIVERGE_DIALOG_SET -> {
+                DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:533", "executeNode DIVERGE_DIALOG_SET", mapOf("questId" to model.id, "nodeId" to node.id))
+                enablePersistentDialog(p)
+                val next = node.goto ?: node.gotos.firstOrNull()
+                if (next != null) handleGoto(player, model, branchId, next, 0, node.id)
+            }
+            QuestObjectNodeType.DIVERGE_DIALOG_UNSET -> {
+                DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:540", "executeNode DIVERGE_DIALOG_UNSET", mapOf("questId" to model.id, "nodeId" to node.id))
+                disablePersistentDialog(p)
+                val next = node.goto ?: node.gotos.firstOrNull()
+                if (next != null) handleGoto(player, model, branchId, next, 0, node.id)
+            }
             QuestObjectNodeType.DIVERGE_CHAT -> {
-                DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:531", "executeNode DIVERGE_CHAT", mapOf("questId" to model.id, "nodeId" to node.id, "choicesCount" to node.choices.size, "hideChat" to node.hideChat, "dialog" to node.dialog))
+                DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:531", "executeNode DIVERGE_CHAT", mapOf("questId" to model.id, "nodeId" to node.id, "choicesCount" to node.choices.size, "hideChat" to node.hideChat))
                 sessions[player.uniqueId]?.nodeId = node.id
-                ChatHideService.flushBufferedToHistory(p.uniqueId)
-                val originalHistory = ChatHistoryManager.history(p.uniqueId)
-                val limitedHistory = originalHistory.takeLast(GREY_HISTORY_LIMIT)
-                val greyHistory = limitedHistory.map { ChatHistoryManager.greyOut(it) }
-                val hiding = node.hideChat || node.dialog
-                DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:536", "executeNode DIVERGE_CHAT setup", mapOf("questId" to model.id, "nodeId" to node.id, "hiding" to hiding, "originalHistorySize" to originalHistory.size, "greyHistorySize" to greyHistory.size))
-                if (hiding) {
-                    ChatHideService.beginDialog(player.uniqueId)
+
+                val persistent = persistentDialogStates.containsKey(p.uniqueId)
+
+                if (!persistent) {
+                    ChatHideService.flushBufferedToHistory(p.uniqueId)
+                    if (node.hideChat) {
+                        ChatHideService.hide(p.uniqueId)
+                        ChatHideService.clearDedup(p.uniqueId)
+                    }
                 }
-                val baselineSeq = ChatHistoryManager.lastSequence(p.uniqueId)
+
                 divergeSessions[player.uniqueId] = DivergeChatSession(
                     node.choices,
                     intro = (node.startNotify?.message ?: emptyList()) + node.message,
-                    dialogMode = node.dialog,
-                    currentIndex = 1,
                     lastRenderIdx = 1,
-                    lastRenderAt = 0L,
-                    originalHistory = originalHistory,
-                    greyHistory = greyHistory,
-                    baselineSeq = baselineSeq
+                    lastRenderAt = 0L
                 )
                 DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:553", "executeNode DIVERGE_CHAT sending choices", mapOf("questId" to model.id, "nodeId" to node.id, "choicesCount" to node.choices.size))
                 sendDivergeChoices(p, node.choices, highlightIdx = 1, storeState = true)
@@ -796,7 +822,18 @@ class BranchRuntimeManager(
                 "SEND_MESSAGE" -> {
                     DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:671", "runActionQueue SEND_MESSAGE", mapOf("questId" to model.id, "nodeId" to node.id, "delay" to delay))
                     schedule(delay, bukkitPlayer.uniqueId) {
-                        MessageFormatter.send(bukkitPlayer, renderRaw(payload, model, player))
+                        if (persistentDialogStates.containsKey(bukkitPlayer.uniqueId)) {
+                            val rendered = renderRaw(payload, model, player)
+                            val comp = legacySerializer.deserialize(MessageFormatter.format(rendered))
+                            val lines = dialogScreens.computeIfAbsent(bukkitPlayer.uniqueId) { mutableListOf() }
+                            lines.add(comp)
+                            clearChatWindow(bukkitPlayer, 100)
+                            lines.forEach { line ->
+                                sendSyntheticMessage(bukkitPlayer, line, trackSynthetic = true)
+                            }
+                        } else {
+                            MessageFormatter.send(bukkitPlayer, renderRaw(payload, model, player))
+                        }
                     }
                 }
                 "SEND_SOUND" -> {
@@ -1064,79 +1101,57 @@ class BranchRuntimeManager(
         if (id.isEmpty()) return
         val world = location.world ?: return
         if (viewer.world != world) return
+        particleScriptEngine.start(
+            viewer = viewer,
+            scriptId = id,
+            locationProvider = { location },
+            mode = ParticleScriptEngine.Mode.ONCE,
+            runImmediately = true
+        )
+    }
 
-        val script = particleScripts[id] ?: loadParticleScript(id)?.also { particleScripts[id] = it }
-        if (script == null) {
-            val particle = runCatching { org.bukkit.Particle.valueOf(id.uppercase()) }.getOrNull() ?: return
-            viewer.spawnParticle(particle, location, 10, 0.0, 0.0, 0.0, 0.0)
-            return
-        }
+    fun startParticleScriptLoopAtLocation(
+        viewer: org.bukkit.entity.Player,
+        scriptId: String,
+        locationProvider: () -> org.bukkit.Location?
+    ): ParticleScriptEngine.Handle? {
+        val id = scriptId.trim()
+        if (id.isEmpty()) return null
+        return particleScriptEngine.start(
+            viewer = viewer,
+            scriptId = id,
+            locationProvider = locationProvider,
+            mode = ParticleScriptEngine.Mode.RESTART,
+            runImmediately = true
+        )
+    }
 
-        val interval = script.interval.coerceAtLeast(1L)
-        object : BukkitRunnable() {
-            var ticks = 0L
-            override fun run() {
-                if (!viewer.isOnline) { cancel(); return }
-                if (viewer.world != world) { cancel(); return }
-                if (ticks >= script.duration) { cancel(); return }
-                val loc = location.clone().add(script.offsetX, script.offsetY, script.offsetZ)
-                viewer.spawnParticle(script.particle, loc, script.count, script.spreadX, script.spreadY, script.spreadZ, script.speed)
-                ticks += interval
-            }
-        }.runTaskTimer(plugin, 0L, interval)
+    fun stopParticleScript(handle: ParticleScriptEngine.Handle) {
+        particleScriptEngine.cancel(handle)
+    }
+
+    fun isParticleScriptActive(handle: ParticleScriptEngine.Handle): Boolean {
+        return particleScriptEngine.isActive(handle)
     }
 
     private fun runParticleScript(player: org.bukkit.entity.Player, payload: String) {
         DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1255", "runParticleScript entry", mapOf("playerUuid" to player.uniqueId.toString(), "payload" to payload))
         val id = payload.trim()
-        val script = particleScripts[id] ?: loadParticleScript(id)?.also { particleScripts[id] = it }
-        if (script == null) {
+        val dir = File(plugin.dataFolder, "content/particle_scripts")
+        val hasScript = File(dir, "$id.txt").exists() || File(dir, "$id.yml").exists() || File(dir, "$id.yaml").exists()
+        if (!hasScript) {
             DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1258", "runParticleScript script not found, using fallback", mapOf("id" to id))
             // fallback: treat payload as direct particle name
             spawnParticles(player, payload, allPlayers = false)
             return
         }
-        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1263", "runParticleScript starting", mapOf("id" to id, "particle" to script.particle.name, "duration" to script.duration, "interval" to script.interval))
-        object : BukkitRunnable() {
-            var ticks = 0L
-            override fun run() {
-                if (!player.isOnline) { cancel(); return }
-                if (ticks >= script.duration) { cancel(); return }
-                val loc = player.location.clone().add(script.offsetX, script.offsetY, script.offsetZ)
-                player.world.spawnParticle(script.particle, loc, script.count, script.spreadX, script.spreadY, script.spreadZ, script.speed)
-                ticks += script.interval
-            }
-        }.runTaskTimer(plugin, 0L, script.interval)
-    }
-
-    private fun loadParticleScript(id: String): ParticleScript? {
-        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1275", "loadParticleScript entry", mapOf("id" to id))
-        val file = File(plugin.dataFolder, "content/particle_scripts/$id.yml")
-        if (!file.exists()) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1277", "loadParticleScript file not found", mapOf("id" to id, "filePath" to file.absolutePath))
-            return null
-        }
-        val cfg = YamlConfiguration.loadConfiguration(file)
-        val particle = runCatching { Particle.valueOf(cfg.getString("particle")?.uppercase() ?: "") }.getOrNull()
-        if (particle == null) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1279", "loadParticleScript invalid particle", mapOf("id" to id, "particleStr" to cfg.getString("particle")))
-            return null
-        }
-        val script = ParticleScript(
-            particle = particle,
-            count = cfg.getInt("count", 10),
-            offsetX = cfg.getDouble("offset.x", 0.0),
-            offsetY = cfg.getDouble("offset.y", 0.0),
-            offsetZ = cfg.getDouble("offset.z", 0.0),
-            spreadX = cfg.getDouble("spread.x", 0.0),
-            spreadY = cfg.getDouble("spread.y", 0.0),
-            spreadZ = cfg.getDouble("spread.z", 0.0),
-            speed = cfg.getDouble("speed", 0.0),
-            interval = cfg.getLong("interval", 5L),
-            duration = cfg.getLong("duration", 40L)
+        particleScriptEngine.start(
+            viewer = player,
+            scriptId = id,
+            locationProvider = { player.location },
+            mode = ParticleScriptEngine.Mode.ONCE,
+            runImmediately = true
         )
-        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1292", "loadParticleScript success", mapOf("id" to id, "particle" to particle.name, "count" to script.count, "duration" to script.duration))
-        return script
     }
 
     fun preloadParticleScripts() {
@@ -1146,13 +1161,10 @@ class BranchRuntimeManager(
             DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1297", "preloadParticleScripts dir not found", mapOf("dirPath" to dir.absolutePath))
             return
         }
-        val files = dir.listFiles { f -> f.isFile && (f.extension.equals("yml", true) || f.extension.equals("yaml", true)) }
+        val files = dir.listFiles { f -> f.isFile && (f.extension.equals("yml", true) || f.extension.equals("yaml", true) || f.extension.equals("txt", true)) }
         DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1298", "preloadParticleScripts found files", mapOf("filesCount" to (files?.size ?: 0)))
-        files?.forEach { file ->
-            val id = file.nameWithoutExtension
-            loadParticleScript(id)?.let { particleScripts[id] = it }
-        }
-        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1302", "preloadParticleScripts done", mapOf("loadedCount" to particleScripts.size))
+        particleScriptEngine.preload(dir)
+        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1302", "preloadParticleScripts done", mapOf("loadedCount" to particleScriptEngine.cachedProgramsCount()))
     }
 
     private fun scheduleCitizensNavigation(player: org.bukkit.entity.Player, payload: String): Boolean {
@@ -1606,6 +1618,24 @@ class BranchRuntimeManager(
         }
     }
 
+    fun shouldBlockCitizensNpcActivator(player: OfflinePlayer, npcId: Int, npcName: String?): Boolean {
+        val session = sessions[player.uniqueId] ?: return false
+        val model = questService.questInfo(session.questId) ?: return false
+        val branch = model.branches[session.branchId] ?: return false
+        val node = branch.objects[session.nodeId] ?: return false
+
+        val requiresNpcInteract = when (node.type) {
+            QuestObjectNodeType.NPC_INTERACT,
+            QuestObjectNodeType.PLAYER_CITIZENS_NPC_DELIVER_ITEMS,
+            QuestObjectNodeType.PLAYER_CITIZENS_NPC_DIALOG,
+            QuestObjectNodeType.PLAYER_CITIZENS_NPC_INTERACT -> true
+            else -> false
+        }
+        if (!requiresNpcInteract) return false
+
+        return matchesNpc(node, npcId, npcName)
+    }
+
     fun handleNpcKill(player: OfflinePlayer, npcId: Int, npcName: String?): Boolean {
         DebugLog.logToFile("debug-session", "run1", "CITIZENS", "BranchRuntimeManager.kt:1564", "handleNpcKill entry", mapOf("playerUuid" to player.uniqueId.toString(), "npcId" to npcId, "npcName" to (npcName ?: "null")))
         val session = sessions[player.uniqueId] ?: run {
@@ -1890,16 +1920,13 @@ class BranchRuntimeManager(
             DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1113", "handleDivergeChoice wrong node type", mapOf("nodeType" to node.type.name))
             return
         }
-        val diverge = divergeSessions.remove(player.uniqueId)
-        val bukkit = player.player
-        if (bukkit != null && diverge != null) {
-            ChatHideService.flushBufferedToHistory(bukkit.uniqueId)
-            val newMessages = ChatHistoryManager.historySince(bukkit.uniqueId, diverge.baselineSeq)
-            val mergedHistory = diverge.originalHistory + newMessages
-            clearChatWindow(bukkit, 100)
-            replayHistory(bukkit, mergedHistory, trackSynthetic = true)
+        divergeSessions.remove(player.uniqueId)
+        val persistent = persistentDialogStates.containsKey(player.uniqueId)
+        if (!persistent) {
+            if (node.hideChat) {
+                ChatHideService.show(player.uniqueId)
+            }
         }
-        ChatHideService.endDialog(player.uniqueId)
         val gotoRaw = choice.goto ?: return
         val target = normalizeTarget(gotoRaw)
         net.nemoria.quest.core.DebugLog.log("Diverge choice idx=$choiceIndex quest=${model.id} node=${node.id} -> $target")
@@ -1930,29 +1957,27 @@ class BranchRuntimeManager(
             }
             session.lastRenderIdx = highlightIdx
             session.lastRenderAt = System.currentTimeMillis()
-            val clearLines = 100
-            clearChatWindow(player, clearLines)
-            val historySlice = session.greyHistory.takeLast(GREY_HISTORY_LIMIT)
-            replayHistory(player, historySlice, trackSynthetic = true)
-            repeat(2) { sendSyntheticMessage(player, Component.empty(), trackSynthetic = true) }
         }
         val introLines = session?.intro?.map { legacySerializer.deserialize(MessageFormatter.format(it)) } ?: emptyList()
+        val hintRaw = net.nemoria.quest.core.Services.i18n.msg("diverge.chat_hint")
         val optionLines = choices.mapIndexed { idx, ch ->
-            val prefixColor = if (idx + 1 == highlightIdx) "<red>> " else "<green>> "
-            val formatted = MessageFormatter.format("$prefixColor${idx + 1}. ${ch.text}")
-            val comp = legacySerializer.deserialize(formatted)
-            comp.clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/nq diverge ${idx + 1}"))
+            val base = legacySerializer.deserialize(MessageFormatter.format(ch.text))
+                .clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/nq diverge ${idx + 1}"))
+            val redoHover = ch.redoText?.let { legacySerializer.deserialize(MessageFormatter.format(it)) }
+            if (redoHover != null) {
+                base.hoverEvent(net.kyori.adventure.text.event.HoverEvent.showText(redoHover))
+            } else {
+                base
+            }
         }
-        val hintRaw = net.nemoria.quest.core.Services.i18n.msg("chat_hint")
-        val hintComp = legacySerializer.deserialize(MessageFormatter.format(hintRaw))
 
-        val allComps = introLines + optionLines + hintComp
+        val hintLine = legacySerializer.deserialize(MessageFormatter.format(hintRaw))
+        val allComps = introLines + optionLines + Component.empty() + hintLine
 
         val sendMenu: () -> Unit = {
             allComps.forEach { comp ->
                 sendSyntheticMessage(player, comp, trackSynthetic = true)
             }
-            session?.lastDialog = allComps.map { legacySerializer.serialize(it) }
         }
 
         if (storeState) {
@@ -1962,33 +1987,27 @@ class BranchRuntimeManager(
         }
     }
 
-    fun scrollDiverge(player: org.bukkit.entity.Player, delta: Int) {
-        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1674", "scrollDiverge entry", mapOf("playerUuid" to player.uniqueId.toString(), "delta" to delta))
-        val session = divergeSessions[player.uniqueId]
-        if (session == null) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1675", "scrollDiverge no session", mapOf("playerUuid" to player.uniqueId.toString()))
-            return
-        }
-        if (session.choices.isEmpty()) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1676", "scrollDiverge no choices", mapOf("playerUuid" to player.uniqueId.toString()))
-            return
-        }
-        val size = session.choices.size
-        val next = ((session.currentIndex - 1 + delta) % size + size) % size + 1
-        session.currentIndex = next
-        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1679", "scrollDiverge scrolling", mapOf("playerUuid" to player.uniqueId.toString(), "oldIndex" to (session.currentIndex - delta), "newIndex" to next, "size" to size))
-        sendDivergeChoices(player, session.choices, highlightIdx = next)
+    private fun enablePersistentDialog(player: org.bukkit.entity.Player) {
+        ChatHideService.flushBufferedToHistory(player.uniqueId)
+        val originalHistory = ChatHistoryManager.history(player.uniqueId)
+        val baselineSeq = ChatHistoryManager.lastSequence(player.uniqueId)
+        persistentDialogStates[player.uniqueId] = DialogRestoreState(originalHistory = originalHistory, baselineSeq = baselineSeq)
+        dialogScreens[player.uniqueId] = mutableListOf()
+        ChatHideService.beginDialog(player.uniqueId)
+        clearChatWindow(player, 100)
     }
 
-    fun acceptCurrentDiverge(player: org.bukkit.entity.Player) {
-        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1683", "acceptCurrentDiverge entry", mapOf("playerUuid" to player.uniqueId.toString()))
-        val session = divergeSessions[player.uniqueId]
-        if (session == null) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1684", "acceptCurrentDiverge no session", mapOf("playerUuid" to player.uniqueId.toString()))
-            return
+    private fun disablePersistentDialog(player: org.bukkit.entity.Player) {
+        val state = persistentDialogStates.remove(player.uniqueId)
+        dialogScreens.remove(player.uniqueId)
+        if (state != null) {
+            ChatHideService.flushBufferedToHistory(player.uniqueId)
+            val newMessages = ChatHistoryManager.historySince(player.uniqueId, state.baselineSeq)
+            val merged = state.originalHistory + newMessages
+            clearChatWindow(player, 100)
+            replayHistory(player, merged, trackSynthetic = true)
         }
-        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1685", "acceptCurrentDiverge accepting", mapOf("playerUuid" to player.uniqueId.toString(), "choiceIndex" to session.currentIndex))
-        handleDivergeChoice(player, session.currentIndex)
+        ChatHideService.endDialog(player.uniqueId)
     }
 
     private fun clearChatWindow(player: org.bukkit.entity.Player, lines: Int = 100) {
@@ -2994,9 +3013,6 @@ class BranchRuntimeManager(
         DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2919", "sendSyntheticMessage entry", mapOf("playerUuid" to player.uniqueId.toString(), "trackSynthetic" to trackSynthetic, "componentText" to PlainTextComponentSerializer.plainText().serialize(component).take(100)))
         ChatHideService.allowNext(player.uniqueId)
         ChatHistoryManager.skipNextMessages(player.uniqueId)
-        if (trackSynthetic) {
-            divergeSessions[player.uniqueId]?.syntheticMessages?.add(gson.serialize(component))
-        }
         player.sendMessage(component)
     }
 
@@ -3851,20 +3867,6 @@ class BranchRuntimeManager(
         val nodeId: String,
         val nextIndex: Int,
         val pendingDelay: Long
-    )
-
-    private data class ParticleScript(
-        val particle: Particle,
-        val count: Int,
-        val offsetX: Double,
-        val offsetY: Double,
-        val offsetZ: Double,
-        val spreadX: Double,
-        val spreadY: Double,
-        val spreadZ: Double,
-        val speed: Double,
-        val interval: Long,
-        val duration: Long
     )
 
     private data class GroupState(
