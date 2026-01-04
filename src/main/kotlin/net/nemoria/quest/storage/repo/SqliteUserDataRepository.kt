@@ -15,7 +15,7 @@ class SqliteUserDataRepository(private val dataSource: HikariDataSource) : UserD
     override fun load(uuid: UUID): UserData {
         DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteUserDataRepository.kt:15", "load entry", mapOf("uuid" to uuid.toString()))
         dataSource.connection.use { conn ->
-            conn.prepareStatement("SELECT active, completed, progress, user_vars, cooldowns FROM user_data WHERE uuid = ?").use { ps ->
+            conn.prepareStatement("SELECT active, completed, progress, user_vars, cooldowns, pools, actionbar_enabled, title_enabled FROM user_data WHERE uuid = ?").use { ps ->
                 ps.setString(1, uuid.toString())
                 ps.executeQuery().use { rs ->
                     if (rs.next()) {
@@ -26,6 +26,9 @@ class SqliteUserDataRepository(private val dataSource: HikariDataSource) : UserD
                         val progress = parseProgress(progressRaw)
                         val userVars = parseMap(userVarsRaw)
                         val cooldowns = parseCooldowns(rs.getString("cooldowns"))
+                        val pools = parsePools(rs.getString("pools"))
+                        val actionbarEnabled = rs.getInt("actionbar_enabled") != 0
+                        val titleEnabled = rs.getInt("title_enabled") != 0
                         DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteUserDataRepository.kt:23", "load found", mapOf("uuid" to uuid.toString(), "activeCount" to active.size, "completedCount" to completed.size, "progressCount" to progress.size, "userVarsCount" to userVars.size, "cooldownsCount" to cooldowns.size))
                         return UserData(
                             uuid = uuid,
@@ -33,7 +36,10 @@ class SqliteUserDataRepository(private val dataSource: HikariDataSource) : UserD
                             completedQuests = completed,
                             progress = progress,
                             userVariables = userVars,
-                            cooldowns = cooldowns
+                            cooldowns = cooldowns,
+                            questPools = pools,
+                            actionbarEnabled = actionbarEnabled,
+                            titleEnabled = titleEnabled
                         )
                     }
                 }
@@ -51,9 +57,9 @@ class SqliteUserDataRepository(private val dataSource: HikariDataSource) : UserD
         dataSource.connection.use { conn ->
             conn.prepareStatement(
                 """
-                INSERT INTO user_data(uuid, active, completed, progress, user_vars, cooldowns)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(uuid) DO UPDATE SET active = excluded.active, completed = excluded.completed, progress = excluded.progress, user_vars = excluded.user_vars, cooldowns = excluded.cooldowns
+                INSERT INTO user_data(uuid, active, completed, progress, user_vars, cooldowns, pools, actionbar_enabled, title_enabled)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(uuid) DO UPDATE SET active = excluded.active, completed = excluded.completed, progress = excluded.progress, user_vars = excluded.user_vars, cooldowns = excluded.cooldowns, pools = excluded.pools, actionbar_enabled = excluded.actionbar_enabled, title_enabled = excluded.title_enabled
                 """.trimIndent()
             ).use { ps ->
                 ps.setString(1, data.uuid.toString())
@@ -62,6 +68,9 @@ class SqliteUserDataRepository(private val dataSource: HikariDataSource) : UserD
                 ps.setString(4, gson.toJson(data.progress))
                 ps.setString(5, gson.toJson(data.userVariables))
                 ps.setString(6, gson.toJson(data.cooldowns))
+                ps.setString(7, gson.toJson(data.questPools))
+                ps.setInt(8, if (data.actionbarEnabled) 1 else 0)
+                ps.setInt(9, if (data.titleEnabled) 1 else 0)
                 val rows = ps.executeUpdate()
                 DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqliteUserDataRepository.kt:56", "save completed", mapOf("uuid" to data.uuid.toString(), "rowsAffected" to rows))
             }
@@ -101,5 +110,10 @@ class SqliteUserDataRepository(private val dataSource: HikariDataSource) : UserD
         if (raw.isNullOrBlank()) return mutableMapOf()
         val type = object : TypeToken<Map<String, QuestCooldown>>() {}.type
         return runCatching { gson.fromJson<Map<String, QuestCooldown>>(raw, type).toMutableMap() }.getOrElse { mutableMapOf() }
+    }
+
+    private fun parsePools(raw: String?): QuestPoolsState {
+        if (raw.isNullOrBlank()) return QuestPoolsState()
+        return runCatching { gson.fromJson(raw, QuestPoolsState::class.java) }.getOrElse { QuestPoolsState() }
     }
 }

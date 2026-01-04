@@ -8,7 +8,10 @@ data class UserData(
     val completedQuests: MutableSet<String> = mutableSetOf(),
     val progress: MutableMap<String, QuestProgress> = mutableMapOf(),
     val userVariables: MutableMap<String, String> = mutableMapOf(),
-    val cooldowns: MutableMap<String, QuestCooldown> = mutableMapOf()
+    val cooldowns: MutableMap<String, QuestCooldown> = mutableMapOf(),
+    val questPools: QuestPoolsState = QuestPoolsState(),
+    var actionbarEnabled: Boolean = true,
+    var titleEnabled: Boolean = true
 )
 
 data class QuestProgress(

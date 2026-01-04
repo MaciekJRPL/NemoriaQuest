@@ -1,6 +1,222 @@
 name: "<gold>NemoriaQuest"
 type: CHEST_6_ROW
-contents: []
-show_status: [] # AVAILABLE, PROGRESS, UNAVAILABLE, COMPLETED
+show_status: []
 order_quests: true
 sort_quests_by_status: true
+default_page: main
+
+groups:
+  demo:
+    - test_features
+    - test_farmera
+    - example_fetch
+  misc:
+    - mega_test_all
+    - alledrogo_1
+    - quest_template
+
+pages:
+  main:
+    name: "<gold>NemoriaQuest - Main"
+    type: CHEST_6_ROW
+    fill_border: true
+    items:
+      list_all:
+        type: LIST
+        source: ALL
+      btn_active:
+        type: BUTTON
+        slot: 48
+        open_page: active
+        item:
+          type: LIME_DYE
+          name: "<green>Active quests"
+          lore:
+            - "<gray>Open active list"
+      btn_tests:
+        type: BUTTON
+        slot: 50
+        open_page: tests
+        item:
+          type: BOOK
+          name: "<yellow>Test group"
+          lore:
+            - "<gray>Group: demo"
+      btn_custom:
+        type: BUTTON
+        slot: 46
+        open_page: custom
+        item:
+          type: CHEST
+          name: "<aqua>Custom list"
+          lore:
+            - "<gray>Selected quests"
+      btn_ranking:
+        type: BUTTON
+        slot: 52
+        open_page: ranking
+        item:
+          type: NETHER_STAR
+          name: "<gold>Rankings"
+          lore:
+            - "<gray>Open ranking page"
+      btn_paged:
+        type: BUTTON
+        slot: 44
+        open_page: paged
+        item:
+          type: PAPER
+          name: "<white>Paged list"
+          lore:
+            - "<gray>Test next/prev"
+      btn_command:
+        type: BUTTON
+        slot: 53
+        commands:
+          - "say GUI button clicked by {player}"
+        commands_as_player: false
+        item:
+          type: REDSTONE_TORCH
+          name: "<red>Command test"
+          lore:
+            - "<gray>Runs console command"
+  active:
+    name: "<green>Active quests"
+    type: CHEST_6_ROW
+    fill_border: true
+    items:
+      list_active:
+        type: LIST
+        source: ACTIVE
+        show_status:
+          - PROGRESS
+      btn_back:
+        type: BUTTON
+        slot: 49
+        open_page: main
+        item:
+          type: ARROW
+          name: "<white>Back"
+          lore:
+            - "<gray>Return to main"
+  tests:
+    name: "<yellow>Test group (demo)"
+    type: CHEST_6_ROW
+    fill_border: true
+    items:
+      list_group:
+        type: LIST
+        source: GROUP
+        group: demo
+      btn_back:
+        type: BUTTON
+        slot: 49
+        open_page: main
+        item:
+          type: ARROW
+          name: "<white>Back"
+          lore:
+            - "<gray>Return to main"
+  custom:
+    name: "<aqua>Custom quests"
+    type: CHEST_6_ROW
+    fill_border: true
+    items:
+      list_custom:
+        type: LIST
+        source: CUSTOM
+        quest_ids:
+          - test_features
+          - quest_template
+          - example_fetch
+      btn_back:
+        type: BUTTON
+        slot: 49
+        open_page: main
+        item:
+          type: ARROW
+          name: "<white>Back"
+          lore:
+            - "<gray>Return to main"
+  paged:
+    name: "<white>Paged list"
+    type: CHEST_6_ROW
+    fill_border: true
+    items:
+      list_paged:
+        type: LIST
+        source: ALL
+        slots:
+          - 10
+          - 11
+          - 12
+          - 13
+      btn_prev:
+        type: BUTTON
+        slot: 45
+        prev_page: true
+        item:
+          type: ARROW
+          name: "<gray>Prev page"
+      btn_next:
+        type: BUTTON
+        slot: 53
+        next_page: true
+        item:
+          type: ARROW
+          name: "<gray>Next page"
+      btn_back:
+        type: BUTTON
+        slot: 49
+        open_page: main
+        item:
+          type: ARROW
+          name: "<white>Back"
+  ranking:
+    name: "<gold>Rankings"
+    type: CHEST_6_ROW
+    fill_border: true
+    items:
+      ranking_global:
+        type: RANKING
+        slot: 20
+        ranking:
+          type: COMPLETED_QUESTS
+          limit: 10
+        item:
+          type: BOOK
+          name: "<gold>Completed quests"
+          lore:
+            - "{ranking}"
+      ranking_objectives:
+        type: RANKING
+        slot: 24
+        ranking:
+          type: COMPLETED_OBJECTIVES
+          limit: 10
+        item:
+          type: BOOK
+          name: "<gold>Completed objectives"
+          lore:
+            - "{ranking}"
+      ranking_quest:
+        type: RANKING
+        slot: 22
+        ranking:
+          type: QUEST_COMPLETED
+          quest_id: test_features
+          limit: 10
+        item:
+          type: PAPER
+          name: "<yellow>Quest: test_features"
+          lore:
+            - "{ranking}"
+      btn_back:
+        type: BUTTON
+        slot: 49
+        open_page: main
+        item:
+          type: ARROW
+          name: "<white>Back"
+          lore:
+            - "<gray>Return to main"

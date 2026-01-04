@@ -80,6 +80,7 @@ class StorageManager(
         DebugLog.logToFile("debug-session", "run1", "STORAGE", "StorageManager.kt:68", "createUserTable entry", mapOf("backend" to backend.name))
         val uuidType = if (backend == BackendType.MYSQL) "VARCHAR(36)" else "TEXT"
         val textType = if (backend == BackendType.MYSQL) "LONGTEXT" else "TEXT"
+        val boolType = if (backend == BackendType.MYSQL) "TINYINT(1)" else "INTEGER"
         conn.createStatement().use { st ->
             st.executeUpdate(
                 """
@@ -89,15 +90,22 @@ class StorageManager(
                     completed $textType NOT NULL,
                     progress $textType NOT NULL,
                     user_vars $textType NOT NULL,
-                    cooldowns $textType NOT NULL
+                    cooldowns $textType NOT NULL,
+                    pools $textType NOT NULL,
+                    actionbar_enabled $boolType NOT NULL DEFAULT 1,
+                    title_enabled $boolType NOT NULL DEFAULT 1
                 )
                 """.trimIndent()
             )
         }
         val userColumnDdl = if (backend == BackendType.SQLITE) "TEXT NOT NULL DEFAULT ''" else "$textType NOT NULL DEFAULT ''"
+        val boolColumnDdl = if (backend == BackendType.SQLITE) "INTEGER NOT NULL DEFAULT 1" else "$boolType NOT NULL DEFAULT 1"
         addColumnIfMissing(conn, "user_data", "progress", userColumnDdl)
         addColumnIfMissing(conn, "user_data", "user_vars", userColumnDdl)
         addColumnIfMissing(conn, "user_data", "cooldowns", userColumnDdl)
+        addColumnIfMissing(conn, "user_data", "pools", userColumnDdl)
+        addColumnIfMissing(conn, "user_data", "actionbar_enabled", boolColumnDdl)
+        addColumnIfMissing(conn, "user_data", "title_enabled", boolColumnDdl)
         DebugLog.logToFile("debug-session", "run1", "STORAGE", "StorageManager.kt:89", "createUserTable completed", mapOf())
     }
 

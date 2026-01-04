@@ -64,6 +64,57 @@ class GuiListener : Listener {
                     Services.storage.questModelRepo.findById(questId)?.let { manager.openDetail(player, it) }
                 }
             }
+            is GuiManager.PageHolder -> {
+                DebugLog.logToFile("debug-session", "run1", "GUI", "GuiListener.kt:30", "onClick PageHolder", mapOf("playerUuid" to player.uniqueId.toString(), "pageId" to topHolder.pageId, "page" to topHolder.page))
+                event.isCancelled = true
+                if (event.clickedInventory != event.view.topInventory) return
+                val item = event.currentItem ?: return
+                val questId = manager.questFromItem(item)
+                if (questId != null) {
+                    if (event.click.isRightClick) {
+                        val active = Services.questService.activeQuests(player).contains(questId)
+                        if (active) {
+                            Services.questService.stopQuest(player, questId, complete = false)
+                            MessageFormatter.send(player, Services.i18n.msg("command.stop.stopped", mapOf("quest" to questId)))
+                        } else {
+                            val result = Services.questService.startQuest(player, questId, viaCommand = false)
+                            when (result) {
+                                net.nemoria.quest.quest.QuestService.StartResult.SUCCESS ->
+                                    MessageFormatter.send(player, Services.i18n.msg("command.start.started", mapOf("quest" to questId)))
+                                net.nemoria.quest.quest.QuestService.StartResult.NOT_FOUND ->
+                                    MessageFormatter.send(player, Services.i18n.msg("command.start.not_found", mapOf("quest" to questId)))
+                                net.nemoria.quest.quest.QuestService.StartResult.ALREADY_ACTIVE ->
+                                    MessageFormatter.send(player, Services.i18n.msg("command.start.already_active", mapOf("quest" to questId)))
+                                net.nemoria.quest.quest.QuestService.StartResult.COMPLETION_LIMIT ->
+                                    MessageFormatter.send(player, Services.i18n.msg("command.start.limit_reached", mapOf("quest" to questId)))
+                                net.nemoria.quest.quest.QuestService.StartResult.REQUIREMENT_FAIL ->
+                                    MessageFormatter.send(player, Services.i18n.msg("command.start.requirements", mapOf("quest" to questId)))
+                                net.nemoria.quest.quest.QuestService.StartResult.CONDITION_FAIL ->
+                                    MessageFormatter.send(player, Services.i18n.msg("command.start.conditions", mapOf("quest" to questId)))
+                                net.nemoria.quest.quest.QuestService.StartResult.WORLD_RESTRICTED ->
+                                    MessageFormatter.send(player, Services.i18n.msg("command.start.world_restriction", mapOf("quest" to questId)))
+                                net.nemoria.quest.quest.QuestService.StartResult.COOLDOWN -> {
+                                    val remaining = Services.questService.cooldownRemainingSeconds(player, questId)
+                                    val timeFmt = Services.questService.formatDuration(remaining)
+                                    MessageFormatter.send(player, Services.i18n.msg("command.start.cooldown", mapOf("quest" to questId, "time" to timeFmt)))
+                                }
+                                net.nemoria.quest.quest.QuestService.StartResult.PERMISSION_FAIL ->
+                                    MessageFormatter.send(player, Services.i18n.msg("command.start.permission", mapOf("quest" to questId)))
+                                net.nemoria.quest.quest.QuestService.StartResult.OFFLINE ->
+                                    MessageFormatter.send(player, Services.i18n.msg("command.player_only"))
+                                net.nemoria.quest.quest.QuestService.StartResult.INVALID_BRANCH ->
+                                    MessageFormatter.send(player, Services.i18n.msg("command.start.invalid_branch", mapOf("quest" to questId)))
+                            }
+                        }
+                        manager.openPage(player, topHolder.config, topHolder.pageId, topHolder.page, topHolder.allowedQuestIds)
+                    } else if (event.click.isLeftClick) {
+                        Services.storage.questModelRepo.findById(questId)?.let { manager.openDetail(player, it) }
+                    }
+                } else {
+                    val itemId = manager.guiItemIdFromItem(item) ?: return
+                    manager.handlePageItemClick(player, topHolder, itemId)
+                }
+            }
             is GuiManager.DetailHolder -> {
                 DebugLog.logToFile("debug-session", "run1", "GUI", "GuiListener.kt:30", "onClick DetailHolder", mapOf("playerUuid" to player.uniqueId.toString(), "questId" to topHolder.questId))
                 event.isCancelled = true

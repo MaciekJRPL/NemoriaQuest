@@ -42,3 +42,7 @@ permissions:
     default: true
   nemoriaquest.command.goto:
     default: op
+  nemoriaquest.command.actionbar:
+    default: true
+  nemoriaquest.command.title:
+    default: true

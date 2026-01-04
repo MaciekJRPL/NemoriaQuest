@@ -1,6 +1,5 @@
 package net.nemoria.quest.gui
 
-import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer
 import net.nemoria.quest.core.Colors
 import net.nemoria.quest.core.DebugLog
@@ -22,7 +21,6 @@ class ScoreboardManager {
     private val entryPool = ChatColor.values().map { it.toString() }
     private val cache: MutableMap<UUID, Snapshot> = ConcurrentHashMap()
     private val inFlight: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
-    private val cacheTtlMs = 1000L
     private val rendering: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
     private val rendered: MutableMap<UUID, RenderState> = ConcurrentHashMap()
 
@@ -31,8 +29,8 @@ class ScoreboardManager {
         val questNamePlain: String?,
         val detail: String?,
         val showQuest: Boolean,
-        val version: String,
-        val timestamp: Long
+        val dataVersion: Long,
+        val version: String
     )
 
     private data class RenderState(val signature: String)
@@ -66,15 +64,15 @@ class ScoreboardManager {
     }
 
     fun update(player: Player) {
-        val now = System.currentTimeMillis()
+        val currentVersion = Services.questService.progressVersion(player.uniqueId)
         val snap = cache[player.uniqueId]
         if (snap == null) {
             DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:63", "update no cache, fetching", mapOf("playerUuid" to player.uniqueId.toString()))
             fetchAsync(player, rerender = true)
             return
         }
-        if (now - snap.timestamp > cacheTtlMs) {
-            DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:67", "update cache expired, fetching", mapOf("playerUuid" to player.uniqueId.toString(), "ageMs" to (now - snap.timestamp)))
+        if (snap.dataVersion != currentVersion) {
+            DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:67", "update cache stale, fetching", mapOf("playerUuid" to player.uniqueId.toString(), "cachedVersion" to snap.dataVersion, "currentVersion" to currentVersion))
             fetchAsync(player, rerender = true)
             return
         }
@@ -232,43 +230,39 @@ class ScoreboardManager {
             DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:209", "fetchAsync already in flight", mapOf("playerUuid" to player.uniqueId.toString()))
             return
         }
-        Bukkit.getScheduler().runTaskAsynchronously(Services.plugin, Runnable {
+        Bukkit.getScheduler().runTask(Services.plugin, Runnable {
             try {
+                val dataVersion = Services.questService.progressVersion(player.uniqueId)
                 val active = Services.questService.activeQuests(player)
                 val questId = active.firstOrNull()
                 if (questId == null) {
-                    val ts = System.currentTimeMillis()
-                    cache[player.uniqueId] = Snapshot(null, null, null, false, Services.plugin.description.version, ts)
+                    cache[player.uniqueId] = Snapshot(null, null, null, false, dataVersion, Services.plugin.description.version)
                     return@Runnable
                 }
                 val quest = Services.questService.questInfo(questId)
                 if (quest == null || quest.progressNotify?.scoreboard != true) {
                     DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:220", "fetchAsync quest not found or scoreboard disabled", mapOf("playerUuid" to player.uniqueId.toString(), "questId" to questId, "questNull" to (quest == null), "scoreboardEnabled" to (quest?.progressNotify?.scoreboard == true)))
-                    val ts = System.currentTimeMillis()
-                    cache[player.uniqueId] = Snapshot(null, null, null, false, Services.plugin.description.version, ts)
+                    cache[player.uniqueId] = Snapshot(null, null, null, false, dataVersion, Services.plugin.description.version)
                     return@Runnable
                 }
                 val detail = Services.questService.currentObjectiveDetail(player, questId)
                     ?: Services.i18n.msg("scoreboard.no_objective")
                 val questNamePlain = ChatColor.stripColor(MessageFormatter.formatLegacyOnly(quest.displayName ?: quest.name))
                     ?: (quest.displayName ?: quest.name)
-                val ts = System.currentTimeMillis()
-                cache[player.uniqueId] = Snapshot(questId, questNamePlain, detail, true, Services.plugin.description.version, ts)
+                cache[player.uniqueId] = Snapshot(questId, questNamePlain, detail, true, dataVersion, Services.plugin.description.version)
                 DebugLog.logToFile("debug-session", "run1", "SCOREBOARD", "ScoreboardManager.kt:230", "fetchAsync cached", mapOf("playerUuid" to player.uniqueId.toString(), "questId" to questId, "questName" to questNamePlain.take(50)))
             } finally {
                 inFlight.remove(player.uniqueId)
                 if (rerender) {
-                    Bukkit.getScheduler().runTask(Services.plugin, Runnable {
-                        // guard to avoid re-entrancy loops
-                        if (!rendering.add(player.uniqueId)) return@Runnable
-                        try {
-                            if (player.isOnline) {
-                                update(player)
-                            }
-                        } finally {
-                            rendering.remove(player.uniqueId)
+                    // guard to avoid re-entrancy loops
+                    if (!rendering.add(player.uniqueId)) return@Runnable
+                    try {
+                        if (player.isOnline) {
+                            update(player)
                         }
-                    })
+                    } finally {
+                        rendering.remove(player.uniqueId)
+                    }
                 }
             }
         })

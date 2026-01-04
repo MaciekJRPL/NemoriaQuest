@@ -1,6 +1,11 @@
 package net.nemoria.quest.gui
 
 import net.nemoria.quest.config.GuiConfig
+import net.nemoria.quest.config.GuiItemConfig
+import net.nemoria.quest.config.GuiItemStackConfig
+import net.nemoria.quest.config.GuiItemType
+import net.nemoria.quest.config.GuiListSource
+import net.nemoria.quest.config.GuiRankingSpec
 import net.nemoria.quest.config.GuiType
 import net.nemoria.quest.core.DebugLog
 import net.nemoria.quest.core.MessageFormatter
@@ -16,12 +21,19 @@ import org.bukkit.inventory.Inventory
 import org.bukkit.inventory.InventoryHolder
 import org.bukkit.inventory.ItemFlag
 import org.bukkit.inventory.ItemStack
+import kotlin.math.max
 
 class GuiManager {
     private val keyQuestId: NamespacedKey by lazy { NamespacedKey(Services.plugin, "quest_id") }
+    private val keyGuiItemId: NamespacedKey by lazy { NamespacedKey(Services.plugin, "gui_item_id") }
 
     fun openList(player: Player, config: GuiConfig, filterActive: Boolean = false, page: Int = 0) {
         DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:22", "openList entry", mapOf("playerUuid" to player.uniqueId.toString(), "filterActive" to filterActive, "page" to page, "guiType" to config.type.name))
+        if (config.pages.isNotEmpty()) {
+            val pageId = if (filterActive && config.pages.containsKey("active")) "active" else (config.defaultPage ?: "main")
+            openPage(player, config, pageId, page, allowedQuestIds = null)
+            return
+        }
         val holder = ListHolder(filterActive, page, config)
         val inv = Bukkit.createInventory(holder, config.type.size, MessageFormatter.format(config.name))
         holder.inv = inv
@@ -58,6 +70,11 @@ class GuiManager {
 
     fun openListFiltered(player: Player, config: GuiConfig, allowedQuestIds: Set<String>, filterActive: Boolean = false, page: Int = 0) {
         DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:54", "openListFiltered entry", mapOf("playerUuid" to player.uniqueId.toString(), "allowedCount" to allowedQuestIds.size, "filterActive" to filterActive, "page" to page, "guiType" to config.type.name))
+        if (config.pages.isNotEmpty()) {
+            val pageId = if (filterActive && config.pages.containsKey("active")) "active" else (config.defaultPage ?: "main")
+            openPage(player, config, pageId, page, allowedQuestIds)
+            return
+        }
         val holder = ListHolder(filterActive, page, config)
         val inv = Bukkit.createInventory(holder, config.type.size, MessageFormatter.format(config.name))
         holder.inv = inv
@@ -89,6 +106,89 @@ class GuiManager {
         inv.setItem(inv.size - 5, toggleItem(filterActive))
         player.openInventory(inv)
         DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:86", "openListFiltered opened", mapOf("playerUuid" to player.uniqueId.toString(), "pageItemsCount" to pageItems.size))
+    }
+
+    fun openPage(player: Player, config: GuiConfig, pageId: String, page: Int = 0, allowedQuestIds: Set<String>? = null) {
+        val pageCfg = config.pages[pageId] ?: run {
+            openList(player, config, filterActive = false, page = page)
+            return
+        }
+        DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:90", "openPage entry", mapOf("playerUuid" to player.uniqueId.toString(), "pageId" to pageId, "page" to page, "guiType" to (pageCfg.type ?: config.type).name))
+        val holder = PageHolder(pageId, page, config, allowedQuestIds)
+        val invType = pageCfg.type ?: config.type
+        val title = pageCfg.name ?: config.name
+        val inv = Bukkit.createInventory(holder, invType.size, MessageFormatter.format(title))
+        holder.inv = inv
+        if (pageCfg.fillBorder) {
+            fillBorder(inv)
+        }
+
+        val all = Services.questService.listQuests()
+        val activeSet = Services.questService.activeQuests(player)
+        val completedSet = Services.questService.completedQuests(player)
+        val progressMap = Services.questService.progress(player)
+        val contentSlots = (pageCfg.contentSlots.takeIf { it.isNotEmpty() } ?: CONTENT_SLOTS)
+            .filter { it in 0 until inv.size }
+
+        var listItem: GuiItemConfig? = null
+        pageCfg.items.forEach { itemCfg ->
+            when (itemCfg.type) {
+                GuiItemType.LIST -> if (listItem == null) listItem = itemCfg
+                GuiItemType.BUTTON, GuiItemType.STATIC -> {
+                    val slot = itemCfg.slot ?: return@forEach
+                    if (slot !in 0 until inv.size) return@forEach
+                    val item = buildStaticItem(player, itemCfg, null) ?: return@forEach
+                    inv.setItem(slot, item)
+                }
+                GuiItemType.RANKING -> {
+                    val slot = itemCfg.slot ?: return@forEach
+                    if (slot !in 0 until inv.size) return@forEach
+                    val item = buildRankingItem(player, itemCfg) ?: return@forEach
+                    inv.setItem(slot, item)
+                }
+            }
+        }
+
+        listItem?.let { itemCfg ->
+            val slots = (itemCfg.slots.takeIf { it.isNotEmpty() } ?: contentSlots)
+                .filter { it in 0 until inv.size }
+            if (slots.isEmpty()) return@let
+            var shown = when (itemCfg.source) {
+                GuiListSource.ALL -> all
+                GuiListSource.ACTIVE -> all.filter { activeSet.contains(it.id) }
+                GuiListSource.GROUP -> {
+                    val groupIds = config.groups[itemCfg.group] ?: emptyList()
+                    all.filter { groupIds.contains(it.id) }
+                }
+                GuiListSource.CUSTOM -> all.filter { itemCfg.questIds.contains(it.id) }
+            }
+            if (allowedQuestIds != null) {
+                shown = shown.filter { allowedQuestIds.contains(it.id) }
+            }
+            val allowedStatuses = itemCfg.showStatus.ifEmpty { config.showStatus }.map { it.uppercase() }.toSet()
+            if (allowedStatuses.isNotEmpty()) {
+                shown = shown.filter { allowedStatuses.contains(status(player, it, activeSet, completedSet).name) }
+            }
+            val orderQuests = itemCfg.orderQuests ?: config.orderQuests
+            val sortByStatus = itemCfg.sortQuestsByStatus ?: config.sortQuestsByStatus
+            if (!orderQuests) {
+                shown = shown.shuffled()
+            }
+            if (sortByStatus) {
+                shown = shown.sortedBy { statusWeight(status(player, it, activeSet, completedSet)) }
+            }
+            val startIndex = page * slots.size
+            val pageItems = shown.drop(startIndex).take(slots.size)
+            pageItems.forEachIndexed { idx, model ->
+                val slot = slots.getOrNull(idx) ?: return@forEachIndexed
+                val st = status(player, model, activeSet, completedSet)
+                val progress = progressMap[model.id]
+                inv.setItem(slot, questItem(player, model, st, progress))
+            }
+        }
+
+        player.openInventory(inv)
+        DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:149", "openPage opened", mapOf("playerUuid" to player.uniqueId.toString(), "pageId" to pageId, "page" to page))
     }
 
     fun openDetail(player: Player, model: QuestModel) {
@@ -136,6 +236,12 @@ class GuiManager {
         return questId
     }
 
+    internal fun guiItemIdFromItem(item: ItemStack?): String? {
+        if (item == null) return null
+        val meta = item.itemMeta ?: return null
+        return meta.persistentDataContainer.get(keyGuiItemId, org.bukkit.persistence.PersistentDataType.STRING)
+    }
+
     private fun questItem(player: Player, model: QuestModel, status: QuestStatusItemState, progress: QuestProgress?): ItemStack {
         val statusTemplate = model.statusItems[status] ?: model.defaultStatusItem
         val placeholders = buildPlaceholders(player, model, status, progress)
@@ -160,6 +266,105 @@ class GuiManager {
         return item
     }
 
+
+    internal fun handlePageItemClick(player: Player, holder: PageHolder, itemId: String) {
+        val pageCfg = holder.config.pages[holder.pageId] ?: return
+        val itemCfg = pageCfg.items.firstOrNull { it.id == itemId } ?: return
+        if (itemCfg.commands.isNotEmpty()) {
+            val commands = itemCfg.commands.map { it.replace("{player}", player.name) }
+            if (itemCfg.commandsAsPlayer) {
+                commands.forEach { player.performCommand(it) }
+            } else {
+                val console = Bukkit.getServer().consoleSender
+                commands.forEach { Bukkit.dispatchCommand(console, it) }
+            }
+        }
+        val nextPage = when {
+            itemCfg.nextPage -> holder.page + 1
+            itemCfg.prevPage -> max(0, holder.page - 1)
+            else -> holder.page
+        }
+        val targetPage = itemCfg.openPage ?: holder.pageId
+        if (itemCfg.nextPage || itemCfg.prevPage || itemCfg.openPage != null || itemCfg.commands.isNotEmpty()) {
+            openPage(player, holder.config, targetPage, nextPage, holder.allowedQuestIds)
+        }
+    }
+
+    private fun buildStaticItem(player: Player, itemCfg: GuiItemConfig, questId: String?): ItemStack? {
+        val cfg = itemCfg.item ?: return null
+        val material = runCatching { Material.valueOf(cfg.type.uppercase()) }.getOrNull() ?: Material.STONE
+        val item = ItemStack(material)
+        val meta = item.itemMeta ?: return item
+        val name = cfg.name?.let { renderSimple(player, questId, it) } ?: ""
+        if (name.isNotBlank()) meta.setDisplayName(name)
+        if (cfg.lore.isNotEmpty()) {
+            meta.lore = cfg.lore.mapNotNull { renderSimple(player, questId, it) }.filter { it.isNotBlank() }
+        }
+        meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES)
+        cfg.customModelData?.let { meta.setCustomModelData(it) }
+        meta.persistentDataContainer.set(keyGuiItemId, org.bukkit.persistence.PersistentDataType.STRING, itemCfg.id)
+        item.itemMeta = meta
+        return item
+    }
+
+    private fun buildRankingItem(player: Player, itemCfg: GuiItemConfig): ItemStack? {
+        val ranking = itemCfg.ranking ?: return null
+        val baseCfg = itemCfg.item ?: GuiItemStackConfig(type = "PAPER")
+        val material = runCatching { Material.valueOf(baseCfg.type.uppercase()) }.getOrNull() ?: Material.PAPER
+        val item = ItemStack(material)
+        val meta = item.itemMeta ?: return item
+        val name = baseCfg.name?.let { renderSimple(player, null, it) } ?: Services.i18n.msg("gui.ranking.title")
+        if (name.isNotBlank()) meta.setDisplayName(MessageFormatter.format(name))
+        val lines = buildRankingLines(player, ranking)
+        val baseLore = baseCfg.lore.mapNotNull { renderSimple(player, null, it) }
+        val finalLore = if (baseLore.any { it.contains("{ranking}") }) {
+            baseLore.flatMap { line ->
+                if (line.contains("{ranking}")) lines else listOf(line)
+            }
+        } else {
+            baseLore + lines
+        }
+        if (finalLore.isNotEmpty()) {
+            meta.lore = finalLore
+        }
+        meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES)
+        baseCfg.customModelData?.let { meta.setCustomModelData(it) }
+        meta.persistentDataContainer.set(keyGuiItemId, org.bukkit.persistence.PersistentDataType.STRING, itemCfg.id)
+        item.itemMeta = meta
+        return item
+    }
+
+    private fun buildRankingLines(player: Player, ranking: GuiRankingSpec): List<String> {
+        val titleLine = ranking.title ?: Services.i18n.msg("gui.ranking.title")
+        val lineFormat = ranking.lineFormat ?: Services.i18n.msg("gui.ranking.line")
+        val emptyLine = ranking.emptyLine ?: Services.i18n.msg("gui.ranking.empty")
+        val entries = Services.questService.guiRanking(ranking.type, ranking.questId, ranking.limit)
+        val lines = mutableListOf<String>()
+        if (titleLine.isNotBlank()) {
+            lines.add(MessageFormatter.format(titleLine))
+        }
+        if (entries.isEmpty()) {
+            lines.add(MessageFormatter.format(emptyLine))
+            return lines
+        }
+        entries.forEachIndexed { idx, entry ->
+            var line = lineFormat
+                .replace("{pos}", (idx + 1).toString())
+                .replace("{player}", entry.name)
+                .replace("{value}", entry.value.toString())
+            line = MessageFormatter.format(line)
+            lines.add(line)
+        }
+        return lines
+    }
+
+    private fun renderSimple(player: Player, questId: String?, text: String): String {
+        var out = text.replace("{player}", player.name)
+        if (!questId.isNullOrBlank()) {
+            out = Services.questService.renderPlaceholders(out, questId, player)
+        }
+        return MessageFormatter.format(out)
+    }
     private fun fillBorder(inv: Inventory) {
         val pane = ItemStack(Material.GRAY_STAINED_GLASS_PANE)
         pane.itemMeta = pane.itemMeta.apply { setDisplayName(" ") }
@@ -171,6 +376,11 @@ class GuiManager {
     }
 
     class ListHolder(val filterActive: Boolean, val page: Int, val config: GuiConfig) : InventoryHolder {
+        lateinit var inv: Inventory
+        override fun getInventory(): Inventory = inv
+    }
+
+    class PageHolder(val pageId: String, val page: Int, val config: GuiConfig, val allowedQuestIds: Set<String>? = null) : InventoryHolder {
         lateinit var inv: Inventory
         override fun getInventory(): Inventory = inv
     }

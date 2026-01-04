@@ -22,11 +22,16 @@ import org.bukkit.event.block.Action
 import org.bukkit.inventory.meta.SpawnEggMeta
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.lang.reflect.Method
 
 class PlayerEntityListener : Listener {
     private val feedTracker: MutableMap<UUID, Pair<UUID, Long>> = ConcurrentHashMap()
     // turtles potrzebują czasu, aby złożyć jaja; dłuższe TTL pozwala zachować właściciela karmienia
     private val feedTtlMs = 120_000L
+    private var citizensRegistry: Any? = null
+    private var citizensGetNpcMethod: Method? = null
+    private var citizensGetNpcIdMethod: Method? = null
+    private var citizensGetNpcNameMethod: Method? = null
 
     @EventHandler(ignoreCancelled = true)
     fun onInteract(event: PlayerInteractEntityEvent) {
@@ -175,13 +180,24 @@ class PlayerEntityListener : Listener {
 
     private fun resolveNpcInfo(entity: org.bukkit.entity.Entity): Pair<Int, String?>? {
         return runCatching {
-            val clazz = Class.forName("net.citizensnpcs.api.CitizensAPI")
-            val regMethod = clazz.getMethod("getNPCRegistry")
-            val registry = regMethod.invoke(null)
-            val getNpc = registry.javaClass.getMethod("getNPC", org.bukkit.entity.Entity::class.java)
+            val registry = citizensRegistry ?: runCatching {
+                val clazz = Class.forName("net.citizensnpcs.api.CitizensAPI")
+                val regMethod = clazz.getMethod("getNPCRegistry")
+                regMethod.invoke(null)
+            }.getOrNull()?.also { citizensRegistry = it } ?: return null
+
+            val getNpc = citizensGetNpcMethod ?: runCatching {
+                registry.javaClass.getMethod("getNPC", org.bukkit.entity.Entity::class.java)
+            }.getOrNull()?.also { citizensGetNpcMethod = it } ?: return null
+
             val npc = getNpc.invoke(registry, entity) ?: return null
-            val id = runCatching { npc.javaClass.getMethod("getId").invoke(npc) as? Int }.getOrNull() ?: return null
-            val name = runCatching { npc.javaClass.getMethod("getName").invoke(npc) as? String }.getOrNull()
+            val npcClass = npc.javaClass
+            val getId = citizensGetNpcIdMethod ?: runCatching { npcClass.getMethod("getId") }.getOrNull()
+                ?.also { citizensGetNpcIdMethod = it } ?: return null
+            val id = runCatching { getId.invoke(npc) as? Int }.getOrNull() ?: return null
+            val getName = citizensGetNpcNameMethod ?: runCatching { npcClass.getMethod("getName") }.getOrNull()
+                ?.also { citizensGetNpcNameMethod = it }
+            val name = runCatching { getName?.invoke(npc) as? String }.getOrNull()
             id to name
         }.onFailure { ex ->
             DebugLog.logToFile("debug-session", "run1", "CITIZENS", "PlayerEntityListener.kt:175", "resolveNpcInfo error", mapOf("entityType" to entity.type.name, "errorType" to ex.javaClass.simpleName, "errorMessage" to (ex.message?.take(100) ?: "null")))

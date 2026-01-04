@@ -64,7 +64,8 @@ enum class QuestObjectiveType {
 data class ProgressNotify(
     val actionbar: String? = null,
     val actionbarDurationSeconds: Long? = null,
-    val scoreboard: Boolean = false
+    val scoreboard: Boolean = false,
+    val title: TitleSettings? = null
 )
 
 enum class QuestStatusItemState {
@@ -118,6 +119,7 @@ data class QuestObjectNode(
     val items: List<QuestItemEntry> = emptyList(),
     val count: Int = 1,
     val variable: String? = null,
+    val questId: String? = null,
     val valueFormula: String? = null,
     val sound: String? = null,
     val title: TitleSettings? = null,
@@ -212,6 +214,7 @@ enum class QuestObjectNodeType {
     SERVER_ITEMS_MODIFY,
     SERVER_ITEMS_TAKE,
     SERVER_COMMANDS_PERFORM,
+    SERVER_START_QUEST,
     SERVER_LOGIC_VARIABLE,
     SERVER_LOGIC_MONEY,
     NPC_INTERACT,

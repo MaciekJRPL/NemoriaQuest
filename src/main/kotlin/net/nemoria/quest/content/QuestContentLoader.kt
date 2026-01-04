@@ -74,8 +74,9 @@ object QuestContentLoader {
             val endTypes = csec.getStringList("end_types").takeIf { it.isNotEmpty() } ?: listOf("SUCCESS")
             CooldownSettings(durationSeconds = dur, endTypes = endTypes.map { it.uppercase() })
         }
-        val variables = cfg.getConfigurationSection("model_variables")?.getKeys(false)?.associateWith { key ->
-            cfg.getConfigurationSection("model_variables")!!.getString(key, "") ?: ""
+        val modelVarsSec = cfg.getConfigurationSection("model_variables")
+        val variables = modelVarsSec?.getKeys(false)?.associateWith { key ->
+            modelVarsSec.getString(key, "") ?: ""
         }?.toMutableMap() ?: mutableMapOf()
         val concurrency = cfg.getConfigurationSection("concurrency")?.let {
             Concurrency(
@@ -100,9 +101,10 @@ object QuestContentLoader {
         }
         val completion = cfg.getConfigurationSection("completion")?.let { compSec ->
             val maxComp = compSec.getInt("max_completions", 1)
-            val notify = compSec.getConfigurationSection("notify")?.getKeys(false)?.associateWith { key ->
-                parseNotify(compSec.getConfigurationSection("notify.$key"))
-            }?.filterValues { it != null }?.mapValues { it.value!! } ?: emptyMap()
+            val notify = compSec.getConfigurationSection("notify")?.getKeys(false)
+                ?.associateNotNull { key ->
+                    parseNotify(compSec.getConfigurationSection("notify.$key"))?.let { key to it }
+                } ?: emptyMap()
             CompletionSettings(maxCompletions = maxComp, notify = notify)
         } ?: CompletionSettings()
         val activators = cfg.getStringList("activators")
@@ -125,7 +127,16 @@ object QuestContentLoader {
             val durationRaw = it.getString("actionbar_duration")
             val durationSeconds = parseDurationSeconds(durationRaw)
             val scoreboard = it.getBoolean("scoreboard", false)
-            ProgressNotify(actionbar, durationSeconds, scoreboard)
+            val title = it.getConfigurationSection("title")?.let { t ->
+                TitleSettings(
+                    fadeIn = t.getInt("fade_in", 10),
+                    stay = t.getInt("stay", 60),
+                    fadeOut = t.getInt("fade_out", 10),
+                    title = t.getString("title"),
+                    subtitle = t.getString("subtitle")
+                )
+            }
+            ProgressNotify(actionbar, durationSeconds, scoreboard, title)
         }
         val statusItems = cfg.getConfigurationSection("status_items")?.getKeys(false)?.mapNotNull { key ->
             val state = runCatching { QuestStatusItemState.valueOf(key.uppercase()) }.getOrNull() ?: return@mapNotNull null
@@ -168,23 +179,26 @@ object QuestContentLoader {
         } ?: emptyList()
         val rewards = cfg.getConfigurationSection("rewards")?.let { sec ->
             val commands = sec.getStringList("commands")
-            val points = sec.getConfigurationSection("points")?.getKeys(false)?.associateWith { key ->
-                sec.getConfigurationSection("points")!!.getInt(key, 0)
+            val pointsSec = sec.getConfigurationSection("points")
+            val points = pointsSec?.getKeys(false)?.associateWith { key ->
+                pointsSec.getInt(key, 0)
             } ?: emptyMap()
-            val rewardVariables = sec.getConfigurationSection("variables")?.getKeys(false)?.associateWith { varKey ->
-                sec.getConfigurationSection("variables")!!.getString(varKey, "") ?: ""
+            val rewardVarsSec = sec.getConfigurationSection("variables")
+            val rewardVariables = rewardVarsSec?.getKeys(false)?.associateWith { varKey ->
+                rewardVarsSec.getString(varKey, "") ?: ""
             } ?: emptyMap()
             QuestRewards(commands, points, rewardVariables)
         } ?: QuestRewards()
-        val branches = cfg.getConfigurationSection("branches")?.getKeys(false)?.associateWith { key ->
-            val branchSec = cfg.getConfigurationSection("branches.$key") ?: return@associateWith null
+        val branches = cfg.getConfigurationSection("branches")?.getKeys(false)?.associateNotNull { key ->
+            val branchSec = cfg.getConfigurationSection("branches.$key") ?: return@associateNotNull null
             val startsAt = branchSec.getString("starts_at")
             val objectsSec = branchSec.getConfigurationSection("objects")
-            val objs = objectsSec?.getKeys(false)?.associateWith { objId ->
-                parseObjectNode(objId, objectsSec.getConfigurationSection(objId))
-            }?.filterValues { it != null }?.mapValues { it.value!! } ?: emptyMap()
-            Branch(startsAt, objs)
-        }?.filterValues { it != null }?.mapValues { it.value!! } ?: emptyMap()
+            val objs = objectsSec?.getKeys(false)
+                ?.associateNotNull { objId ->
+                    parseObjectNode(objId, objectsSec.getConfigurationSection(objId))?.let { objId to it }
+                } ?: emptyMap()
+            key to Branch(startsAt, objs)
+        } ?: emptyMap()
         val mainBranch = cfg.getString("main_branch")
         val endObjects = cfg.getConfigurationSection("end_objects")?.getKeys(false)?.associateWith { key ->
             val raw = cfg.get("end_objects.$key")
@@ -267,9 +281,10 @@ object QuestContentLoader {
         )
     }
 
-    private fun parseObjectNode(id: String, sec: org.bukkit.configuration.ConfigurationSection?): QuestObjectNode? {
+    internal fun parseObjectNode(id: String, sec: org.bukkit.configuration.ConfigurationSection?): QuestObjectNode? {
         if (sec == null) return null
-        val type = runCatching { QuestObjectNodeType.valueOf(sec.getString("type", "SERVER_ACTIONS")!!.uppercase()) }.getOrDefault(QuestObjectNodeType.SERVER_ACTIONS)
+        val typeRaw = sec.getString("type")?.uppercase() ?: "SERVER_ACTIONS"
+        val type = runCatching { QuestObjectNodeType.valueOf(typeRaw) }.getOrDefault(QuestObjectNodeType.SERVER_ACTIONS)
         val isPlayerBlockType = when (type) {
             QuestObjectNodeType.PLAYER_BLOCKS_BREAK,
             QuestObjectNodeType.PLAYER_BLOCKS_PLACE,
@@ -315,6 +330,7 @@ object QuestContentLoader {
             else -> 1
         }
         val variable = sec.getString("variable")
+        val questId = sec.getString("quest") ?: sec.getString("quest_id")
         val valueFormula = sec.getString("value_formula")
         val sound = sec.getString("sound")
         val title = sec.getConfigurationSection("title")?.let { t ->
@@ -521,6 +537,7 @@ object QuestContentLoader {
             items = items,
             count = count,
             variable = variable,
+            questId = questId,
             valueFormula = valueFormula,
             sound = sound,
             title = title,
@@ -813,8 +830,9 @@ object QuestContentLoader {
             !optsSec.contains("enchantments_remove") &&
             !optsSec.contains("quest_unlink")
         ) return null
-        val enchAdd = optsSec.getConfigurationSection("enchantments_add")?.getKeys(false)?.associateWith { key ->
-            optsSec.getConfigurationSection("enchantments_add")!!.getInt(key, 1)
+        val enchAddSec = optsSec.getConfigurationSection("enchantments_add")
+        val enchAdd = enchAddSec?.getKeys(false)?.associateWith { key ->
+            enchAddSec.getInt(key, 1)
         } ?: emptyMap()
         val enchRemove = optsSec.getStringList("enchantments_remove")
         return ItemModifyOptions(
@@ -851,7 +869,8 @@ object QuestContentLoader {
 
     private fun parseEndObject(sec: org.bukkit.configuration.ConfigurationSection?): QuestEndObject? {
         if (sec == null) return null
-        val type = runCatching { QuestEndObjectType.valueOf(sec.getString("type")!!.uppercase()) }.getOrElse { return null }
+        val typeRaw = sec.getString("type")?.uppercase() ?: return null
+        val type = runCatching { QuestEndObjectType.valueOf(typeRaw) }.getOrElse { return null }
         val actions = sec.getStringList("actions")
         val commands = sec.getStringList("commands")
         val currency = sec.getString("currency")

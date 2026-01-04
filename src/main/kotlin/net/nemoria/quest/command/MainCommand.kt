@@ -24,6 +24,8 @@ class MainCommand(private val plugin: NemoriaQuestPlugin) : CommandExecutor, Tab
             "info" -> handleInfo(sender, args)
             "complete" -> handleComplete(sender, args)
             "progress" -> handleProgress(sender, args)
+            "actionbar" -> handleActionbar(sender)
+            "title" -> handleTitle(sender)
             "debug" -> handleDebug(sender, args)
             "gui" -> handleGui(sender, args)
             "diverge" -> handleDiverge(sender, args)
@@ -231,6 +233,36 @@ class MainCommand(private val plugin: NemoriaQuestPlugin) : CommandExecutor, Tab
         return true
     }
 
+    private fun handleActionbar(sender: CommandSender): Boolean {
+        if (!sender.hasPermission("nemoriaquest.command.actionbar")) {
+            sendMsg(sender, "command.no_permission")
+            return true
+        }
+        val player = sender as? org.bukkit.entity.Player
+        if (player == null) {
+            sendMsg(sender, "command.player_only")
+            return true
+        }
+        val enabled = Services.questService.toggleActionbar(player)
+        if (enabled) sendMsg(sender, "command.actionbar.enabled") else sendMsg(sender, "command.actionbar.disabled")
+        return true
+    }
+
+    private fun handleTitle(sender: CommandSender): Boolean {
+        if (!sender.hasPermission("nemoriaquest.command.title")) {
+            sendMsg(sender, "command.no_permission")
+            return true
+        }
+        val player = sender as? org.bukkit.entity.Player
+        if (player == null) {
+            sendMsg(sender, "command.player_only")
+            return true
+        }
+        val enabled = Services.questService.toggleTitle(player)
+        if (enabled) sendMsg(sender, "command.title.enabled") else sendMsg(sender, "command.title.disabled")
+        return true
+    }
+
     private fun handleDebug(sender: CommandSender, args: Array<out String>): Boolean {
         if (!sender.hasPermission("nemoriaquest.command.debug")) {
             sendMsg(sender, "command.no_permission")
@@ -319,7 +351,7 @@ class MainCommand(private val plugin: NemoriaQuestPlugin) : CommandExecutor, Tab
         if (args.isEmpty()) return mutableListOf()
         return when (args.size) {
             1 -> {
-                val options = listOf("reload", "start", "stop", "active", "list", "info", "complete", "progress", "debug", "gui", "goto")
+                val options = listOf("reload", "start", "stop", "active", "list", "info", "complete", "progress", "actionbar", "title", "debug", "gui", "goto")
                 options.filter { it.startsWith(args[0], ignoreCase = true) }.toMutableList()
             }
             2 -> when (args[0].lowercase()) {

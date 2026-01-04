@@ -12,19 +12,24 @@ class MysqlUserDataRepository(private val dataSource: HikariDataSource) : UserDa
 
     override fun load(uuid: UUID): UserData {
         dataSource.connection.use { conn ->
-            conn.prepareStatement("SELECT active, completed, progress, user_vars, cooldowns FROM user_data WHERE uuid = ?").use { ps ->
+            conn.prepareStatement("SELECT active, completed, progress, user_vars, cooldowns, pools, actionbar_enabled, title_enabled FROM user_data WHERE uuid = ?").use { ps ->
                 ps.setString(1, uuid.toString())
                 ps.executeQuery().use { rs ->
                     if (rs.next()) {
                         val progressRaw = rs.getString("progress")
                         val userVarsRaw = rs.getString("user_vars")
+                        val actionbarEnabled = rs.getInt("actionbar_enabled") != 0
+                        val titleEnabled = rs.getInt("title_enabled") != 0
                         return UserData(
                             uuid = uuid,
                             activeQuests = rs.getString("active").toSetMutable(),
                             completedQuests = rs.getString("completed").toSetMutable(),
                             progress = parseProgress(progressRaw),
                             userVariables = parseMap(userVarsRaw),
-                            cooldowns = parseCooldowns(rs.getString("cooldowns"))
+                            cooldowns = parseCooldowns(rs.getString("cooldowns")),
+                            questPools = parsePools(rs.getString("pools")),
+                            actionbarEnabled = actionbarEnabled,
+                            titleEnabled = titleEnabled
                         )
                     }
                 }
@@ -39,9 +44,9 @@ class MysqlUserDataRepository(private val dataSource: HikariDataSource) : UserDa
         dataSource.connection.use { conn ->
             conn.prepareStatement(
                 """
-                INSERT INTO user_data(uuid, active, completed, progress, user_vars, cooldowns)
-                VALUES (?, ?, ?, ?, ?, ?) AS new
-                ON DUPLICATE KEY UPDATE active = new.active, completed = new.completed, progress = new.progress, user_vars = new.user_vars, cooldowns = new.cooldowns
+                INSERT INTO user_data(uuid, active, completed, progress, user_vars, cooldowns, pools, actionbar_enabled, title_enabled)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) AS new
+                ON DUPLICATE KEY UPDATE active = new.active, completed = new.completed, progress = new.progress, user_vars = new.user_vars, cooldowns = new.cooldowns, pools = new.pools, actionbar_enabled = new.actionbar_enabled, title_enabled = new.title_enabled
                 """.trimIndent()
             ).use { ps ->
                 ps.setString(1, data.uuid.toString())
@@ -50,6 +55,9 @@ class MysqlUserDataRepository(private val dataSource: HikariDataSource) : UserDa
                 ps.setString(4, gson.toJson(data.progress))
                 ps.setString(5, gson.toJson(data.userVariables))
                 ps.setString(6, gson.toJson(data.cooldowns))
+                ps.setString(7, gson.toJson(data.questPools))
+                ps.setInt(8, if (data.actionbarEnabled) 1 else 0)
+                ps.setInt(9, if (data.titleEnabled) 1 else 0)
                 ps.executeUpdate()
             }
         }
@@ -85,5 +93,10 @@ class MysqlUserDataRepository(private val dataSource: HikariDataSource) : UserDa
         if (raw.isNullOrBlank()) return mutableMapOf()
         val type = object : TypeToken<Map<String, QuestCooldown>>() {}.type
         return runCatching { gson.fromJson<Map<String, QuestCooldown>>(raw, type).toMutableMap() }.getOrElse { mutableMapOf() }
+    }
+
+    private fun parsePools(raw: String?): QuestPoolsState {
+        if (raw.isNullOrBlank()) return QuestPoolsState()
+        return runCatching { gson.fromJson(raw, QuestPoolsState::class.java) }.getOrElse { QuestPoolsState() }
     }
 }

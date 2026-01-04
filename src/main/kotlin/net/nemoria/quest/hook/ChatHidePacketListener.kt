@@ -26,8 +26,8 @@ class ChatHidePacketListener : PacketListenerAbstract(PacketListenerPriority.NOR
     override fun onPacketSend(event: PacketSendEvent) {
         val player = event.getPlayer<Player>() ?: return
         val id = player.uniqueId
-        val hidden = ChatHideService.isHidden(id) ||
-            ChatHideService.isDialogActive(id)
+        val dialog = ChatHideService.isDialogActive(id)
+        val hidden = dialog || ChatHideService.isHidden(id)
         if (!hidden) return
         val type = event.packetType ?: return
         val (component, json) = resolveComponent(type, event) ?: return
@@ -37,6 +37,12 @@ class ChatHidePacketListener : PacketListenerAbstract(PacketListenerPriority.NOR
             ChatHideService.consumeAllowed(id)
         ) {
             DebugLog.logToFile("debug-session", "run1", "HOOK", "ChatHidePacketListener.kt:36", "onPacketSend allowed", mapOf("playerUuid" to id.toString(), "packetType" to type.name))
+            return
+        }
+
+        if (!dialog) {
+            DebugLog.logToFile("debug-session", "run1", "HOOK", "ChatHidePacketListener.kt:51", "onPacketSend hidden (non-dialog)", mapOf("playerUuid" to id.toString(), "packetType" to type.name))
+            event.isCancelled = true
             return
         }
 

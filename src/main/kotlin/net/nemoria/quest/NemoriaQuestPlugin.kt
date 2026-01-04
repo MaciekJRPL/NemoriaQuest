@@ -92,6 +92,7 @@ class NemoriaQuestPlugin : JavaPlugin() {
         ContentBootstrap(this, Services.storage.questModelRepo).bootstrap()
         val questCount = Services.storage.questModelRepo.findAll().size
         net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:83", "onEnable content bootstrapped", mapOf("questCount" to questCount))
+        Services.questService.reloadPoolsFromDisk()
         Services.questService.reloadCitizensNpcActivators()
         Services.questService.preloadParticleScripts()
         loadGuiConfigs()
@@ -168,6 +169,7 @@ class NemoriaQuestPlugin : JavaPlugin() {
             net.nemoria.quest.hook.PlaceholderHook().register()
         }
         ContentBootstrap(this, Services.storage.questModelRepo).bootstrap()
+        Services.questService.reloadPoolsFromDisk()
         Services.questService.reloadCitizensNpcActivators()
         Services.questService.preloadParticleScripts()
         org.bukkit.event.HandlerList.unregisterAll(this)
@@ -224,25 +226,26 @@ class NemoriaQuestPlugin : JavaPlugin() {
         val scheduler = server.scheduler
         server.onlinePlayers.forEach { player ->
             DebugLog.logToFile("debug-session", "run1", "C", "NemoriaQuestPlugin.kt:197", "resumeActiveBranches forEach", mapOf("playerName" to player.name, "playerUuid" to player.uniqueId.toString(), "isOnline" to player.isOnline))
+            val playerId = player.uniqueId
+            val playerName = player.name
             scheduler.runTaskAsynchronously(this, Runnable {
-                val playerStillOnline = player.isOnline
-                val playerObj = player.player
-                DebugLog.logToFile("debug-session", "run1", "C", "NemoriaQuestPlugin.kt:198", "resumeActiveBranches async start", mapOf("playerName" to player.name, "playerUuid" to player.uniqueId.toString(), "isOnline" to playerStillOnline, "playerObjNull" to (playerObj == null)))
-                Services.questService.preload(player)
-                val active = Services.questService.activeQuests(player)
-                DebugLog.logToFile("debug-session", "run1", "C", "NemoriaQuestPlugin.kt:200", "resumeActiveBranches after activeQuests", mapOf("playerUuid" to player.uniqueId.toString(), "activeCount" to active.size))
-                if (active.isEmpty()) return@Runnable
-                val models = active.mapNotNull { Services.questService.questInfo(it) }
-                if (models.isEmpty()) return@Runnable
+                DebugLog.logToFile("debug-session", "run1", "C", "NemoriaQuestPlugin.kt:198", "resumeActiveBranches async start", mapOf("playerName" to playerName, "playerUuid" to playerId.toString()))
+                val data = Services.storage.userRepo.load(playerId)
+                val active = data.activeQuests.toSet()
+                DebugLog.logToFile("debug-session", "run1", "C", "NemoriaQuestPlugin.kt:200", "resumeActiveBranches after activeQuests", mapOf("playerUuid" to playerId.toString(), "activeCount" to active.size))
+                val models = if (active.isEmpty()) emptyList() else active.mapNotNull { Services.questService.questInfo(it) }
                 scheduler.runTask(this, Runnable {
-                    val playerObjSync = player.player
-                    DebugLog.logToFile("debug-session", "run1", "C", "NemoriaQuestPlugin.kt:204", "resumeActiveBranches sync task", mapOf("playerUuid" to player.uniqueId.toString(), "playerObjNull" to (playerObjSync == null), "modelsCount" to models.size))
+                    val playerObjSync = server.getPlayer(playerId)
+                    DebugLog.logToFile("debug-session", "run1", "C", "NemoriaQuestPlugin.kt:204", "resumeActiveBranches sync task", mapOf("playerUuid" to playerId.toString(), "playerObjNull" to (playerObjSync == null), "modelsCount" to models.size))
+                    if (playerObjSync == null) return@Runnable
+                    Services.questService.preloadFromData(playerId, data)
+                    if (active.isEmpty() || models.isEmpty()) return@Runnable
                     models.forEach { model ->
-                        Services.questService.resumeTimers(player, model)
+                        Services.questService.resumeTimers(playerObjSync, model)
                         if (model.branches.isNotEmpty()) {
-                            Services.questService.resumeBranch(player, model)
+                            Services.questService.resumeBranch(playerObjSync, model)
                         } else {
-                            Services.questService.resumeQuestTimeLimit(player, model)
+                            Services.questService.resumeQuestTimeLimit(playerObjSync, model)
                         }
                     }
                 })

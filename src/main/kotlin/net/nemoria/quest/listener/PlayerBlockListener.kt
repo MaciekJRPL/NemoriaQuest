@@ -20,6 +20,11 @@ import java.util.UUID
 
 class PlayerBlockListener : Listener {
     private val bonemealTracker: MutableMap<String, Pair<UUID, Long>> = mutableMapOf()
+    private val bonemealTtlMs = 30_000L
+
+    private fun pruneBonemeal(now: Long = System.currentTimeMillis()) {
+        bonemealTracker.entries.removeIf { now - it.value.second > bonemealTtlMs }
+    }
 
     @EventHandler(ignoreCancelled = true)
     fun onBreak(event: BlockBreakEvent) {
@@ -88,6 +93,7 @@ class PlayerBlockListener : Listener {
         val block = event.clickedBlock ?: return
         val actLabel = actionLabel(event.action)
         val item = event.item
+        pruneBonemeal()
         if (item != null && item.type == Material.BONE_MEAL && block.type.name.endsWith("_SAPLING")) {
             bonemealTracker[locationKey(block)] = event.player.uniqueId to System.currentTimeMillis()
         }
@@ -126,12 +132,13 @@ class PlayerBlockListener : Listener {
     @EventHandler(ignoreCancelled = true)
     fun onTreeGrow(event: StructureGrowEvent) {
         val block = event.location.block
+        pruneBonemeal()
         val key = locationKey(block)
         val bonemealInfo = bonemealTracker[key]
         val bonemealAgeMs = bonemealInfo?.let { System.currentTimeMillis() - it.second }
         val player = event.player
             ?: bonemealInfo?.let { (uuid, ts) ->
-                if (System.currentTimeMillis() - ts < 30000) Bukkit.getPlayer(uuid) else null
+                if (System.currentTimeMillis() - ts < bonemealTtlMs) Bukkit.getPlayer(uuid) else null
             }
             ?: PlayerBlockTracker.owner(block)?.let { Bukkit.getPlayer(it) }
             ?: run {

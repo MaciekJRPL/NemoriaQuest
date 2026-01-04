@@ -69,6 +69,7 @@ class PlayerMiscListener : Listener {
     @EventHandler
     fun onJoin(event: PlayerJoinEvent) {
         if (!Services.hasQuestService()) return
+        Services.questService.preload(event.player.uniqueId)
         Services.questService.handlePlayerMiscEvent(event.player, BranchRuntimeManager.MiscEventType.CONNECT, null)
     }
 

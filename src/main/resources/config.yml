@@ -9,3 +9,8 @@ core:
   scoreboard_enabled: true
 logging:
   level: INFO
+pools_process_task_ticks: 1200
+progress_notify_loop_actionbar: true
+progress_notify_loop_title: true
+progress_notify_actionbar_loop_millis: 2500
+progress_notify_title_loop_millis: 2500

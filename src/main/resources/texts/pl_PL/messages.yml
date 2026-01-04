@@ -39,6 +39,12 @@ command:
   progress:
     usage: "<prefix><primary>Użycie: /nq progress <questId> <objectiveId>"
     done: "<prefix><success>Ukończono cel <primary>{objective} w misji <primary>{quest}."
+  actionbar:
+    enabled: "<prefix><success>Actionbar wlaczony."
+    disabled: "<prefix><secondary>Actionbar wylaczony."
+  title:
+    enabled: "<prefix><success>Tytuly wlaczone."
+    disabled: "<prefix><secondary>Tytuly wylaczone."
   debug:
     usage: "<prefix><primary>Użycie: /nq debug <on|off>"
     enabled: "<prefix><success>Debug włączony."
@@ -62,6 +68,12 @@ help:
     - " <primary>/nq info <id> <dark>- <secondary>Szczegóły misji"
     - " <primary>/nq complete <id> <dark>- <secondary>Oznacz jako ukończoną"
     - " <primary>/nq reload <dark>- <secondary>Przeładuj konfigurację"
+    - " <primary>/nq progress <id> <objective> <dark>- <secondary>Ukoncz cel"
+    - " <primary>/nq debug <on|off> <dark>- <secondary>Przelacz debug"
+    - " <primary>/nq gui <dark>- <secondary>Otworz GUI misji"
+    - " <primary>/nq goto <quest> <branch> <node> <dark>- <secondary>Skocz do wezla"
+    - " <primary>/nq actionbar <dark>- <secondary>Przelacz actionbar"
+    - " <primary>/nq title <dark>- <secondary>Przelacz tytuly"
     - ""
 log:
   content:

@@ -38,7 +38,7 @@ class BranchRuntimeManager(
     private val questService: QuestService
 ) {
     private val sessions: MutableMap<UUID, BranchSession> = ConcurrentHashMap()
-    private val divergeSessions: MutableMap<UUID, DivergeChatSession> = mutableMapOf()
+    private val divergeSessions: MutableMap<UUID, DivergeChatSession> = ConcurrentHashMap()
 
     private data class DialogRestoreState(
         val originalHistory: List<Component>,
@@ -48,14 +48,14 @@ class BranchRuntimeManager(
     private val persistentDialogStates: MutableMap<UUID, DialogRestoreState> = ConcurrentHashMap()
     private val dialogScreens: MutableMap<UUID, MutableList<Component>> = ConcurrentHashMap()
 
-    private val pendingPrompts: MutableMap<String, ActionContinuation> = mutableMapOf()
-    private val pendingSneaks: MutableMap<UUID, ActionContinuation> = mutableMapOf()
-    private val pendingNavigations: MutableMap<UUID, ActionContinuation> = mutableMapOf()
+    private val pendingPrompts: MutableMap<String, ActionContinuation> = ConcurrentHashMap()
+    private val pendingSneaks: MutableMap<UUID, ActionContinuation> = ConcurrentHashMap()
+    private val pendingNavigations: MutableMap<UUID, ActionContinuation> = ConcurrentHashMap()
+    private val rewardTasks: MutableMap<UUID, MutableSet<org.bukkit.scheduler.BukkitTask>> = ConcurrentHashMap()
     private val particleScriptEngine = ParticleScriptEngine(plugin)
-    private val guiSessions: MutableMap<UUID, DivergeGuiSession> = mutableMapOf()
+    private val guiSessions: MutableMap<UUID, DivergeGuiSession> = ConcurrentHashMap()
     private val gson = GsonComponentSerializer.gson()
     private val legacySerializer = LegacyComponentSerializer.legacySection()
-    private val historyNewline = Component.newline()
 
     companion object {
         private fun progressKey(branchId: String, nodeId: String): String = "$branchId:$nodeId"
@@ -287,6 +287,23 @@ class BranchRuntimeManager(
         sessions[playerId]?.transientTasks?.add(task)
     }
 
+    private fun trackRewardTask(playerId: UUID, task: org.bukkit.scheduler.BukkitTask) {
+        val set = rewardTasks.computeIfAbsent(playerId) { ConcurrentHashMap.newKeySet() }
+        set.add(task)
+    }
+
+    private fun removeRewardTask(playerId: UUID, task: org.bukkit.scheduler.BukkitTask) {
+        val set = rewardTasks[playerId] ?: return
+        set.remove(task)
+        if (set.isEmpty()) {
+            rewardTasks.remove(playerId)
+        }
+    }
+
+    private fun cancelRewardTasks(playerId: UUID) {
+        rewardTasks.remove(playerId)?.forEach { it.cancel() }
+    }
+
     fun shutdown() {
         DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:309", "shutdown entry", mapOf("sessionsCount" to sessions.size, "divergeSessionsCount" to divergeSessions.size, "pendingPromptsCount" to pendingPrompts.size, "pendingSneaksCount" to pendingSneaks.size, "pendingNavigationsCount" to pendingNavigations.size, "guiSessionsCount" to guiSessions.size))
         sessions.values.forEach { sess ->
@@ -304,8 +321,125 @@ class BranchRuntimeManager(
         pendingSneaks.clear()
         pendingNavigations.clear()
         guiSessions.clear()
+        rewardTasks.values.forEach { tasks -> tasks.forEach { it.cancel() } }
+        rewardTasks.clear()
         particleScriptEngine.shutdown()
         DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:323", "shutdown completed", mapOf())
+    }
+
+    internal fun executeServerReward(player: OfflinePlayer, model: QuestModel, node: QuestObjectNode) {
+        val p = player.player ?: return
+        if (!node.type.name.startsWith("SERVER_")) return
+        when (node.type) {
+            QuestObjectNodeType.SERVER_ACTIONS -> runRewardActionQueue(player, model, node)
+            QuestObjectNodeType.SERVER_ITEMS_CLEAR -> p.inventory.clear()
+            QuestObjectNodeType.SERVER_ITEMS_GIVE -> giveOrDropItems(p, node, drop = false)
+            QuestObjectNodeType.SERVER_ITEMS_DROP -> giveOrDropItems(p, node, drop = true)
+            QuestObjectNodeType.SERVER_ITEMS_MODIFY -> modifyItems(p, node)
+            QuestObjectNodeType.SERVER_ITEMS_TAKE -> takeItems(p, node)
+            QuestObjectNodeType.SERVER_COMMANDS_PERFORM -> {
+                node.actions.forEach { cmd ->
+                    val rendered = cmd.replace("{player}", p.name)
+                    if (node.commandsAsPlayer) plugin.server.dispatchCommand(p, rendered)
+                    else plugin.server.dispatchCommand(plugin.server.consoleSender, rendered)
+                }
+            }
+            QuestObjectNodeType.SERVER_START_QUEST -> {
+                val targetQuest = node.questId ?: return
+                DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:342", "executeReward SERVER_START_QUEST", mapOf("questId" to model.id, "nodeId" to node.id, "targetQuestId" to targetQuest))
+                questService.startQuest(p, targetQuest)
+            }
+            QuestObjectNodeType.SERVER_LOGIC_VARIABLE,
+            QuestObjectNodeType.SERVER_LOGIC_MODEL_VARIABLE -> {
+                val varName = node.variable ?: return
+                val value = applyValueFormula(model, player, varName, node.valueFormula)
+                questService.updateVariable(player, model.id, varName, value)
+            }
+            QuestObjectNodeType.SERVER_LOGIC_MONEY -> {
+                val amount = evalFormula(node.valueFormula, 0.0)
+                if (node.currency.equals("VAULT", true)) {
+                    val cmd = "eco give ${p.name} ${amount.toInt()}"
+                    plugin.server.dispatchCommand(plugin.server.consoleSender, cmd)
+                } else {
+                    node.actions.forEach {
+                        plugin.server.dispatchCommand(plugin.server.consoleSender, it.replace("{player}", p.name))
+                    }
+                }
+            }
+            QuestObjectNodeType.SERVER_ENTITIES_DAMAGE -> processEntities(player, model.id, node) { ent, dmg -> ent.damage(dmg, p) }
+            QuestObjectNodeType.SERVER_ENTITIES_KILL -> processEntities(player, model.id, node) { ent, _ -> ent.remove() }
+            QuestObjectNodeType.SERVER_ENTITIES_KILL_LINKED -> killLinked(player, model.id, node)
+            QuestObjectNodeType.SERVER_ENTITIES_SPAWN -> spawnEntities(player, model.id, node)
+            QuestObjectNodeType.SERVER_ENTITIES_TELEPORT -> teleportEntities(player, model.id, node)
+            QuestObjectNodeType.SERVER_BLOCKS_PLACE -> placeBlocks(p, node)
+            QuestObjectNodeType.SERVER_EXPLOSIONS_CREATE -> createExplosions(p, node)
+            QuestObjectNodeType.SERVER_FIREWORKS_LAUNCH -> launchFireworks(p, node)
+            QuestObjectNodeType.SERVER_LIGHTNING_STRIKE -> lightningStrikes(p, node)
+            QuestObjectNodeType.SERVER_PLAYER_DAMAGE -> {
+                val dmg = node.damage ?: 0.0
+                if (dmg > 0) p.damage(dmg)
+            }
+            QuestObjectNodeType.SERVER_PLAYER_EFFECTS_GIVE -> giveEffects(p, node)
+            QuestObjectNodeType.SERVER_PLAYER_EFFECTS_REMOVE -> removeEffects(p, node)
+            QuestObjectNodeType.SERVER_PLAYER_TELEPORT -> {
+                val teleportPos = node.teleportPosition ?: node.position
+                val target = resolvePosition(p, teleportPos)
+                p.teleport(target)
+            }
+            QuestObjectNodeType.SERVER_LOGIC_POINTS -> {
+                val catKey = node.pointsCategory ?: "global"
+                val data = questService.progress(player)[model.id]?.variables ?: emptyMap()
+                val current = data["points:$catKey"]?.toDoubleOrNull() ?: 0.0
+                val value = evalFormula(node.valueFormula, current = current)
+                questService.updateVariable(player, model.id, "points:$catKey", value.toLong().toString())
+            }
+            QuestObjectNodeType.SERVER_LOGIC_SERVER_VARIABLE -> {
+                val name = node.variable ?: return
+                val current = net.nemoria.quest.core.Services.variables.server(name)?.toLongOrNull() ?: 0L
+                val value = if (node.valueFormula.isNullOrBlank()) current else {
+                    node.valueFormula.replace("{value}", current.toString()).split("+").mapNotNull { it.trim().toLongOrNull() }.sum()
+                }
+                net.nemoria.quest.core.Services.variables.setServer(name, value.toString())
+            }
+            QuestObjectNodeType.SERVER_LOGIC_XP -> {
+                val current = p.totalExperience
+                val value = evalFormula(node.valueFormula, current.toDouble()).toInt()
+                val newTotal = (current + value).coerceAtLeast(0)
+                p.totalExperience = 0
+                p.giveExp(newTotal)
+            }
+            QuestObjectNodeType.SERVER_ACHIEVEMENT_AWARD -> awardAchievement(p, node)
+            QuestObjectNodeType.SERVER_CAMERA_MODE_TOGGLE -> toggleCameraMode(p, node)
+            QuestObjectNodeType.SERVER_CITIZENS_NPC_NAVIGATE -> {
+                val npcId = node.npcId ?: return
+                val target = resolvePosition(p, node.position)
+                val navigator = citizensNpcNavigatorById(npcId) ?: return
+                runCatching {
+                    val setTarget = navigator.javaClass.getMethod("setTarget", org.bukkit.Location::class.java)
+                    setTarget.invoke(navigator, target)
+                }
+            }
+            QuestObjectNodeType.SERVER_CITIZENS_NPC_TELEPORT -> {
+                val npcId = node.npcId ?: return
+                val target = resolvePosition(p, node.teleportPosition ?: node.position)
+                val npc = citizensNpcById(npcId) ?: return
+                runCatching {
+                    val entity = runCatching { npc.javaClass.getMethod("getEntity").invoke(npc) as? org.bukkit.entity.Entity }.getOrNull()
+                    if (entity != null) {
+                        entity.teleport(target)
+                    } else {
+                        val spawn = npc.javaClass.methods.firstOrNull { it.name.equals("spawn", true) && it.parameterTypes.size == 1 && it.parameterTypes[0] == org.bukkit.Location::class.java }
+                        if (spawn != null) {
+                            spawn.invoke(npc, target)
+                        } else {
+                            val teleport = npc.javaClass.methods.firstOrNull { it.name.equals("teleport", true) && it.parameterTypes.size == 1 && it.parameterTypes[0] == org.bukkit.Location::class.java }
+                            teleport?.invoke(npc, target)
+                        }
+                    }
+                }
+            }
+            else -> Unit
+        }
     }
 
     private fun runNode(player: OfflinePlayer, model: QuestModel, branchId: String, nodeId: String, delayTicks: Long) {
@@ -347,6 +481,9 @@ class BranchRuntimeManager(
         }
         val hadDiverge = divergeSessions.remove(player.uniqueId) != null
         DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:363", "executeNode removed diverge session", mapOf("questId" to model.id, "nodeId" to node.id, "hadDiverge" to hadDiverge))
+        if (hadDiverge && !ChatHideService.isDialogActive(p.uniqueId) && ChatHideService.isHidden(p.uniqueId)) {
+            ChatHideService.show(p.uniqueId)
+        }
         questService.updateBranchState(player, model.id, branchId, node.id)
         if (node.type != QuestObjectNodeType.DIVERGE_CHAT) {
             sendStartNotify(p, node)
@@ -450,6 +587,12 @@ class BranchRuntimeManager(
                     if (node.commandsAsPlayer) plugin.server.dispatchCommand(p, rendered)
                     else plugin.server.dispatchCommand(plugin.server.consoleSender, rendered)
                 }
+                node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
+            }
+            QuestObjectNodeType.SERVER_START_QUEST -> {
+                val targetQuest = node.questId ?: return
+                DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:398", "executeNode SERVER_START_QUEST", mapOf("questId" to model.id, "nodeId" to node.id, "targetQuestId" to targetQuest))
+                questService.startQuest(p, targetQuest)
                 node.goto?.let { handleGoto(player, model, branchId, it, 0, node.id) }
             }
             QuestObjectNodeType.SERVER_LOGIC_VARIABLE -> {
@@ -988,6 +1131,87 @@ class BranchRuntimeManager(
         node.goto?.let { handleGoto(player, model, branchId, it, delay) }
     }
 
+    private fun runRewardActionQueue(player: OfflinePlayer, model: QuestModel, node: QuestObjectNode) {
+        val bukkitPlayer = player.player ?: return
+        var delay = 0L
+        val actions = node.actions
+        for (action in actions) {
+            val trimmed = action.trim()
+            if (trimmed.isEmpty()) continue
+            val parts = trimmed.split("\\s+".toRegex(), limit = 2)
+            val key = parts.getOrNull(0)?.uppercase() ?: continue
+            val payload = parts.getOrNull(1) ?: ""
+            when (key) {
+                "WAIT_TICKS" -> {
+                    val ticks = payload.toLongOrNull() ?: 0L
+                    delay += ticks
+                }
+                "SEND_MESSAGE" -> {
+                    scheduleReward(delay, bukkitPlayer.uniqueId) {
+                        MessageFormatter.send(bukkitPlayer, renderRaw(payload, model, player))
+                    }
+                }
+                "SEND_SOUND" -> {
+                    scheduleReward(delay, bukkitPlayer.uniqueId) { playSound(bukkitPlayer, payload) }
+                }
+                "SEND_TITLE" -> {
+                    scheduleReward(delay, bukkitPlayer.uniqueId) {
+                        val partsTitle = payload.split("\\s+".toRegex(), limit = 5)
+                        val fadeIn = partsTitle.getOrNull(0)?.toIntOrNull() ?: 10
+                        val stay = partsTitle.getOrNull(1)?.toIntOrNull() ?: 60
+                        val fadeOut = partsTitle.getOrNull(2)?.toIntOrNull() ?: 10
+                        val rest = payload.substringAfter(partsTitle.take(3).joinToString(" "), "")
+                        val titles = rest.split(",", limit = 2)
+                        val titleText = MessageFormatter.format(renderRaw(titles.getOrNull(0) ?: "", model, player))
+                        val subText = MessageFormatter.format(renderRaw(titles.getOrNull(1) ?: "", model, player))
+                        bukkitPlayer.sendTitle(titleText, subText, fadeIn, stay, fadeOut)
+                    }
+                }
+                "SEND_PARTICLES" -> {
+                    scheduleReward(delay, bukkitPlayer.uniqueId) {
+                        val params = payload.split("\\s+".toRegex())
+                        val questOnly = params.getOrNull(2)?.toBooleanStrictOrNull() ?: true
+                        spawnParticles(bukkitPlayer, payload, allPlayers = !questOnly)
+                    }
+                }
+                "GIVE_EFFECT" -> {
+                    scheduleReward(delay, bukkitPlayer.uniqueId) { giveEffect(bukkitPlayer, payload) }
+                }
+                "PERFORM_COMMAND" -> {
+                    scheduleReward(delay, bukkitPlayer.uniqueId) {
+                        val partsCmd = payload.split("\\s+".toRegex(), limit = 2)
+                        val asPlayer = partsCmd.getOrNull(0)?.equals("true", ignoreCase = true) == true ||
+                            partsCmd.getOrNull(0)?.equals("player", ignoreCase = true) == true
+                        val cmd = if (asPlayer) partsCmd.getOrNull(1) else payload
+                        if (!cmd.isNullOrBlank()) {
+                            val rendered = renderRaw(cmd, model, player).replace("{player}", bukkitPlayer.name)
+                            if (asPlayer) plugin.server.dispatchCommand(bukkitPlayer, rendered)
+                            else plugin.server.dispatchCommand(plugin.server.consoleSender, rendered)
+                        }
+                    }
+                }
+                "PERFORM_COMMAND_AS_PLAYER" -> {
+                    scheduleReward(delay, bukkitPlayer.uniqueId) {
+                        val cmd = renderRaw(payload, model, player).replace("{player}", bukkitPlayer.name)
+                        plugin.server.dispatchCommand(bukkitPlayer, cmd)
+                    }
+                }
+                "PERFORM_COMMAND_AS_OP_PLAYER" -> {
+                    scheduleReward(delay, bukkitPlayer.uniqueId) {
+                        val cmd = renderRaw(payload, model, player).replace("{player}", bukkitPlayer.name)
+                        val prev = bukkitPlayer.isOp
+                        bukkitPlayer.isOp = true
+                        plugin.server.dispatchCommand(bukkitPlayer, cmd)
+                        bukkitPlayer.isOp = prev
+                    }
+                }
+                "PERFORM_PARTICLE_SCRIPT" -> {
+                    scheduleReward(delay, bukkitPlayer.uniqueId) { runParticleScript(bukkitPlayer, payload) }
+                }
+            }
+        }
+    }
+
     private fun applyValueFormula(model: QuestModel, player: OfflinePlayer, variable: String, formula: String?): String {
         DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1144", "applyValueFormula entry", mapOf("questId" to model.id, "variable" to variable, "formula" to (formula ?: "null"), "playerUuid" to player.uniqueId.toString()))
         val data = questService.progress(player)[model.id]
@@ -1047,6 +1271,21 @@ class BranchRuntimeManager(
             trackTask(playerId, task)
         }
         DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1223", "schedule scheduled", mapOf("delay" to delay, "playerId" to (playerId?.toString() ?: "null")))
+    }
+
+    private fun scheduleReward(delay: Long, playerId: UUID, block: () -> Unit) {
+        val taskRef = arrayOf<org.bukkit.scheduler.BukkitTask?>(null)
+        val task = object : BukkitRunnable() {
+            override fun run() {
+                try {
+                    block()
+                } finally {
+                    taskRef[0]?.let { removeRewardTask(playerId, it) }
+                }
+            }
+        }.runTaskLater(plugin, delay)
+        taskRef[0] = task
+        trackRewardTask(playerId, task)
     }
 
     private fun sendPrompt(player: org.bukkit.entity.Player, message: String, token: String) {
@@ -2613,6 +2852,9 @@ class BranchRuntimeManager(
         detail: String? = null
     ): Boolean {
         DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2215", "handleMiscEvent entry", mapOf("playerUuid" to player.uniqueId.toString(), "kind" to kind.name, "detail" to (detail ?: "null")))
+        if (kind == MiscEventType.DISCONNECT) {
+            cancelRewardTasks(player.uniqueId)
+        }
         val session = sessions[player.uniqueId]
         if (session == null) {
             DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2221", "handleMiscEvent no session", mapOf("playerUuid" to player.uniqueId.toString()))

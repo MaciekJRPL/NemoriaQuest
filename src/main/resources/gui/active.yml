@@ -1,6 +1,28 @@
-name: "<gold>Aktywne Questy"
+name: "<green>Active quests"
 type: CHEST_6_ROW
-contents: []
-show_status: [PROGRESS]
+show_status:
+  - PROGRESS
 order_quests: true
 sort_quests_by_status: true
+default_page: active
+
+pages:
+  active:
+    name: "<green>Active quests"
+    type: CHEST_6_ROW
+    fill_border: true
+    items:
+      list_active:
+        type: LIST
+        source: ACTIVE
+        show_status:
+          - PROGRESS
+      btn_back:
+        type: BUTTON
+        slot: 49
+        open_page: main
+        item:
+          type: ARROW
+          name: "<white>Back"
+          lore:
+            - "<gray>Return to main"

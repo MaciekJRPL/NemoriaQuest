@@ -13,16 +13,31 @@ import org.bukkit.entity.Player
 import org.bukkit.plugin.java.JavaPlugin
 import org.bukkit.scheduler.BukkitRunnable
 import org.bukkit.scheduler.BukkitTask
+import org.bukkit.ChatColor
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer
 import net.nemoria.quest.runtime.BranchRuntimeManager
 import net.nemoria.quest.runtime.ParticleScriptEngine
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 import net.nemoria.quest.data.user.GroupProgress
+import net.nemoria.quest.data.user.QuestPoolData
+import net.nemoria.quest.data.user.QuestPoolsState
 import net.nemoria.quest.content.ActivatorContentLoader
+import net.nemoria.quest.content.PoolContentLoader
+import net.nemoria.quest.config.GuiRankingType
 import java.io.File
 import org.bukkit.Location
 import org.bukkit.entity.Entity
 import java.lang.reflect.Method
+import java.time.DayOfWeek
+import java.time.LocalTime
+import java.time.Month
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.time.temporal.TemporalAdjusters
+import java.util.concurrent.ThreadLocalRandom
+import kotlin.math.max
 
 class QuestService(
     private val plugin: JavaPlugin,
@@ -36,6 +51,11 @@ class QuestService(
     private val questTimeLimitReminders: MutableMap<UUID, MutableMap<String, BukkitTask>> = ConcurrentHashMap()
     private val objectiveTimers: MutableMap<UUID, MutableMap<String, MutableMap<String, BukkitTask>>> = ConcurrentHashMap()
     private var flushTask: BukkitTask? = null
+    private data class SaveRequest(val playerId: UUID, val version: Long, val snapshot: net.nemoria.quest.data.user.UserData)
+    private val pendingSaves: MutableMap<UUID, Long> = ConcurrentHashMap()
+    private val saveQueue: ConcurrentLinkedQueue<SaveRequest> = ConcurrentLinkedQueue()
+    private val completedSaves: ConcurrentLinkedQueue<Pair<UUID, Long>> = ConcurrentLinkedQueue()
+    private var saveTask: BukkitTask? = null
     private val cacheTtlMs = 5 * 60 * 1000L
     private val flushIntervalTicks = 20L
     private val questVarsCache: MutableMap<String, Map<String, String>> = ConcurrentHashMap()
@@ -77,6 +97,30 @@ class QuestService(
     )
 
     private val activatorParticleRuns: MutableMap<UUID, MutableMap<Int, ActivatorParticleRun>> = ConcurrentHashMap()
+    private var poolModels: Map<String, QuestPoolModel> = emptyMap()
+    private var poolGroups: Map<String, QuestPoolGroup> = emptyMap()
+    private var poolQuestIds: Set<String> = emptySet()
+    private var poolIdsByQuestId: Map<String, Set<String>> = emptyMap()
+    private var poolRefundTypesByQuestId: Map<String, Set<String>> = emptyMap()
+    private var poolProcessTask: BukkitTask? = null
+    private var actionbarTask: BukkitTask? = null
+    private var titleTask: BukkitTask? = null
+    private val actionbarState: MutableMap<UUID, ProgressLoopState> = ConcurrentHashMap()
+    private val titleState: MutableMap<UUID, ProgressLoopState> = ConcurrentHashMap()
+    data class GuiRankingEntry(val name: String, val value: Int)
+    private data class GuiRankingSnapshot(val entries: List<GuiRankingEntry>, val atMs: Long)
+    private val guiRankingCache: MutableMap<String, GuiRankingSnapshot> = ConcurrentHashMap()
+    private val guiRankingCacheTtlMs = 2000L
+    private val legacy = LegacyComponentSerializer.builder()
+        .character(ChatColor.COLOR_CHAR)
+        .hexColors()
+        .build()
+    private data class ProgressLoopState(
+        val questId: String?,
+        val signature: String,
+        val version: Long,
+        val lastAt: Long
+    )
 
     private fun clearActivatorParticleRuns(playerId: UUID) {
         val perNpc = activatorParticleRuns.remove(playerId) ?: return
@@ -121,6 +165,8 @@ class QuestService(
 
     init {
         startFlushTask()
+        startSaveTask()
+        startProgressNotifyLoops()
     }
 
     enum class StartResult { SUCCESS, NOT_FOUND, ALREADY_ACTIVE, COMPLETION_LIMIT, REQUIREMENT_FAIL, CONDITION_FAIL, PERMISSION_FAIL, OFFLINE, WORLD_RESTRICTED, COOLDOWN, INVALID_BRANCH }
@@ -147,11 +193,34 @@ class QuestService(
         cached(player.uniqueId)
     }
 
+    internal fun preload(playerId: UUID) {
+        cached(playerId)
+    }
+
+    internal fun preloadFromData(playerId: UUID, data: net.nemoria.quest.data.user.UserData) {
+        val now = System.currentTimeMillis()
+        userCache.compute(playerId) { _, existing ->
+            if (existing != null) {
+                existing.lastAccess = now
+                existing
+            } else {
+                CachedUser(data, false, now)
+            }
+        }
+    }
+
+    internal fun activeQuestIds(playerId: UUID): Set<String> =
+        cached(playerId).data.activeQuests.toSet()
+
+    internal fun progressVersion(playerId: UUID): Long =
+        cached(playerId).version
+
     private fun markDirty(player: OfflinePlayer) {
         val cu = cached(player.uniqueId)
         val oldVersion = cu.version
         cu.dirty = true
         cu.version += 1
+        guiRankingCache.clear()
         DebugLog.logToFile("debug-session", "run1", "CACHE", "QuestService.kt:61", "markDirty", mapOf("playerUuid" to player.uniqueId.toString(), "playerName" to (player.name ?: "null"), "oldVersion" to oldVersion, "newVersion" to cu.version))
     }
 
@@ -160,10 +229,223 @@ class QuestService(
         flushTask = plugin.server.scheduler.runTaskTimer(plugin, Runnable { flushDirty() }, flushIntervalTicks, flushIntervalTicks)
     }
 
+    private fun startSaveTask() {
+        saveTask?.cancel()
+        saveTask = plugin.server.scheduler.runTaskTimerAsynchronously(plugin, Runnable { drainSaveQueue() }, 1L, 1L)
+    }
+
+    private fun startProgressNotifyLoops() {
+        startActionbarLoop()
+        startTitleLoop()
+    }
+
+    private fun startActionbarLoop() {
+        actionbarTask?.cancel()
+        if (!plugin.config.getBoolean("progress_notify_loop_actionbar", true)) {
+            actionbarTask = null
+            return
+        }
+        actionbarTask = plugin.server.scheduler.runTaskTimer(plugin, Runnable { updateActionbarLoop() }, 20L, 20L)
+    }
+
+    private fun startTitleLoop() {
+        titleTask?.cancel()
+        if (!plugin.config.getBoolean("progress_notify_loop_title", true)) {
+            titleTask = null
+            return
+        }
+        titleTask = plugin.server.scheduler.runTaskTimer(plugin, Runnable { updateTitleLoop() }, 20L, 20L)
+    }
+
+    private fun updateActionbarLoop() {
+        val loopMillis = plugin.config.getLong("progress_notify_actionbar_loop_millis", 2500L).coerceAtLeast(250L)
+        plugin.server.onlinePlayers.forEach { player ->
+            sendActionbarLoop(player, loopMillis)
+        }
+    }
+
+    private fun updateTitleLoop() {
+        val loopMillis = plugin.config.getLong("progress_notify_title_loop_millis", 2500L).coerceAtLeast(250L)
+        plugin.server.onlinePlayers.forEach { player ->
+            sendTitleLoop(player, loopMillis)
+        }
+    }
+
+    private fun sendActionbarLoop(player: Player, loopMillis: Long) {
+        if (!isActionbarEnabled(player)) {
+            clearActionbar(player)
+            return
+        }
+        val now = System.currentTimeMillis()
+        val version = progressVersion(player.uniqueId)
+        val state = actionbarState[player.uniqueId]
+        if (state != null && state.version == version && now - state.lastAt < loopMillis) return
+        val selection = selectProgressQuest(player, requireActionbar = true) ?: run {
+            clearActionbar(player)
+            return
+        }
+        val (questId, model) = selection
+        val template = model.progressNotify?.actionbar
+        if (template.isNullOrBlank()) {
+            clearActionbar(player)
+            return
+        }
+        val text = buildProgressLine(template, model, questId, player) ?: run {
+            clearActionbar(player)
+            return
+        }
+        val signature = text
+        if (state != null && state.signature == signature && state.version == version && now - state.lastAt < loopMillis) {
+            return
+        }
+        player.sendActionBar(legacy.deserialize(text))
+        actionbarState[player.uniqueId] = ProgressLoopState(questId, signature, version, now)
+    }
+
+    private fun sendTitleLoop(player: Player, loopMillis: Long) {
+        if (!isTitleEnabled(player)) {
+            clearTitle(player)
+            return
+        }
+        val now = System.currentTimeMillis()
+        val version = progressVersion(player.uniqueId)
+        val state = titleState[player.uniqueId]
+        if (state != null && state.version == version && now - state.lastAt < loopMillis) return
+        val selection = selectProgressQuest(player, requireActionbar = false) ?: run {
+            clearTitle(player)
+            return
+        }
+        val (questId, model) = selection
+        val titleCfg = model.progressNotify?.title ?: run {
+            clearTitle(player)
+            return
+        }
+        val titleText = buildProgressLine(titleCfg.title ?: "", model, questId, player) ?: ""
+        val subtitleText = buildProgressLine(titleCfg.subtitle ?: "", model, questId, player) ?: ""
+        val signature = "${titleCfg.fadeIn}|${titleCfg.stay}|${titleCfg.fadeOut}|$titleText|$subtitleText"
+        if (state != null && state.signature == signature && state.version == version && now - state.lastAt < loopMillis) {
+            return
+        }
+        val fi = titleCfg.fadeIn
+        val st = titleCfg.stay
+        val fo = titleCfg.fadeOut
+        player.sendTitle(titleText, subtitleText, fi, st, fo)
+        titleState[player.uniqueId] = ProgressLoopState(questId, signature, version, now)
+    }
+
+    private fun selectProgressQuest(player: Player, requireActionbar: Boolean): Pair<String, QuestModel>? {
+        val active = activeQuests(player)
+        for (questId in active) {
+            val model = questInfo(questId) ?: continue
+            val notify = model.progressNotify ?: continue
+            if (requireActionbar && notify.actionbar.isNullOrBlank()) continue
+            if (!requireActionbar && notify.title == null) continue
+            return questId to model
+        }
+        return null
+    }
+
+    private fun buildProgressLine(template: String, model: QuestModel, questId: String, player: Player): String? {
+        if (template.isBlank()) return null
+        val questNameRaw = model.displayName ?: model.name
+        val questName = renderPlaceholders(questNameRaw, questId, player)
+        val objective = currentObjectiveDetail(player, questId) ?: Services.i18n.msg("scoreboard.no_objective")
+        var out = template
+        val placeholders = mapOf(
+            "quest" to questName,
+            "quest_name" to questName,
+            "objective" to objective,
+            "objective_detail" to objective
+        )
+        placeholders.forEach { (k, v) ->
+            out = out.replace("{$k}", v)
+        }
+        return MessageFormatter.formatLegacyOnly(out)
+    }
+
+    private fun clearActionbar(player: Player) {
+        if (actionbarState.remove(player.uniqueId) != null) {
+            player.sendActionBar(legacy.deserialize(""))
+        }
+    }
+
+    private fun clearTitle(player: Player) {
+        if (titleState.remove(player.uniqueId) != null) {
+            player.sendTitle("", "", 0, 0, 0)
+        }
+    }
+
+    fun isActionbarEnabled(player: OfflinePlayer): Boolean = data(player).actionbarEnabled
+
+    fun isTitleEnabled(player: OfflinePlayer): Boolean = data(player).titleEnabled
+
+    fun toggleActionbar(player: Player): Boolean {
+        val d = data(player)
+        d.actionbarEnabled = !d.actionbarEnabled
+        markDirty(player)
+        if (!d.actionbarEnabled) {
+            clearActionbar(player)
+        }
+        return d.actionbarEnabled
+    }
+
+    fun toggleTitle(player: Player): Boolean {
+        val d = data(player)
+        d.titleEnabled = !d.titleEnabled
+        markDirty(player)
+        if (!d.titleEnabled) {
+            clearTitle(player)
+        }
+        return d.titleEnabled
+    }
+
+    fun guiRanking(type: GuiRankingType, questId: String?, limit: Int): List<GuiRankingEntry> {
+        val safeLimit = limit.coerceAtLeast(1)
+        val key = "${type.name}|${questId ?: ""}|$safeLimit"
+        val now = System.currentTimeMillis()
+        guiRankingCache[key]?.let {
+            if (now - it.atMs <= guiRankingCacheTtlMs) return it.entries
+        }
+        val entries = plugin.server.onlinePlayers.map { player ->
+            val data = data(player)
+            val value = when (type) {
+                GuiRankingType.COMPLETED_QUESTS -> data.completedQuests.size
+                GuiRankingType.COMPLETED_OBJECTIVES -> data.progress.values.sumOf { progress ->
+                    progress.objectives.values.count { it.completed }
+                }
+                GuiRankingType.QUEST_COMPLETED -> if (!questId.isNullOrBlank() && data.completedQuests.contains(questId)) 1 else 0
+            }
+            GuiRankingEntry(player.name, value)
+        }.filter { it.value > 0 }
+            .sortedWith(compareByDescending<GuiRankingEntry> { it.value }.thenBy { it.name })
+            .take(safeLimit)
+        guiRankingCache[key] = GuiRankingSnapshot(entries, now)
+        return entries
+    }
+
+    private fun drainSaveQueue() {
+        while (true) {
+            val req = saveQueue.poll() ?: break
+            userRepo.save(req.snapshot)
+            completedSaves.add(req.playerId to req.version)
+        }
+    }
+
     fun shutdown() {
+        saveTask?.cancel()
+        saveTask = null
+        poolProcessTask?.cancel()
+        poolProcessTask = null
         flushDirty(forceAll = true)
         flushTask?.cancel()
         flushTask = null
+        actionbarTask?.cancel()
+        actionbarTask = null
+        titleTask?.cancel()
+        titleTask = null
+        actionbarState.clear()
+        titleState.clear()
+        guiRankingCache.clear()
         questTimeLimitTasks.values.forEach { inner -> inner.values.forEach { it.cancel() } }
         questTimeLimitTasks.clear()
         questTimeLimitReminders.values.forEach { inner -> inner.values.forEach { it.cancel() } }
@@ -188,6 +470,11 @@ class QuestService(
         lastActivatorMoveCheckAtMs.clear()
         lastActivatorMoveBlockKey.clear()
         activatorParticleRuns.clear()
+        poolModels = emptyMap()
+        poolGroups = emptyMap()
+        poolQuestIds = emptySet()
+        poolIdsByQuestId = emptyMap()
+        poolRefundTypesByQuestId = emptyMap()
         citizensRegistry = null
         citizensGetByIdMethod = null
         citizensNpcGetEntityMethod = null
@@ -280,6 +567,474 @@ class QuestService(
             .sorted()
 
         startCitizensNpcIndexTask()
+    }
+
+    fun reloadPoolsFromDisk() {
+        val contentDir = File(plugin.dataFolder, "content")
+        val poolDirs = listOf(
+            File(contentDir, "pools"),
+            File(contentDir, "quest_pools"),
+            File(plugin.dataFolder, "quest_pools")
+        )
+        val groupsDir = File(contentDir, "groups")
+        val result = PoolContentLoader.loadAll(poolDirs, groupsDir)
+        poolModels = result.pools
+        poolGroups = result.groups
+        rebuildPoolIndexes()
+        startPoolProcessTask()
+    }
+
+    private fun rebuildPoolIndexes() {
+        val questIds = mutableSetOf<String>()
+        val poolsByQuest = mutableMapOf<String, MutableSet<String>>()
+        val refundByQuest = mutableMapOf<String, MutableSet<String>>()
+        poolModels.forEach { (poolId, pool) ->
+            pool.quests.values.forEach { entry ->
+                val qid = entry.questId.lowercase()
+                questIds.add(qid)
+                poolsByQuest.computeIfAbsent(qid) { mutableSetOf() }.add(poolId)
+                entry.refundTokenOnEndTypes.forEach { t ->
+                    refundByQuest.computeIfAbsent(qid) { mutableSetOf() }.add(t)
+                }
+            }
+            pool.questGroups.values.forEach { entry ->
+                val group = poolGroups[entry.groupId.lowercase()] ?: return@forEach
+                group.quests.forEach { questId ->
+                    val qid = questId.lowercase()
+                    questIds.add(qid)
+                    poolsByQuest.computeIfAbsent(qid) { mutableSetOf() }.add(poolId)
+                    entry.refundTokenOnEndTypes.forEach { t ->
+                        refundByQuest.computeIfAbsent(qid) { mutableSetOf() }.add(t)
+                    }
+                }
+            }
+        }
+        poolQuestIds = questIds
+        poolIdsByQuestId = poolsByQuest.mapValues { it.value.toSet() }
+        poolRefundTypesByQuestId = refundByQuest.mapValues { it.value.toSet() }
+    }
+
+    private fun startPoolProcessTask() {
+        poolProcessTask?.cancel()
+        if (poolModels.isEmpty()) {
+            poolProcessTask = null
+            return
+        }
+        val ticks = plugin.config.getLong("pools_process_task_ticks", 1200L).coerceAtLeast(20L)
+        poolProcessTask = plugin.server.scheduler.runTaskTimer(plugin, Runnable {
+            plugin.server.onlinePlayers.forEach { processPoolsForPlayer(it) }
+        }, ticks, ticks)
+    }
+
+    private fun processPoolsForPlayer(player: Player) {
+        if (poolModels.isEmpty()) return
+        val data = data(player)
+        poolModels.values.forEach { pool ->
+            processPool(pool, player, data)
+        }
+    }
+
+    private data class ActivePoolFrame(val frameId: String, val startMs: Long, val endMs: Long)
+
+    private fun processPool(pool: QuestPoolModel, player: Player, data: net.nemoria.quest.data.user.UserData) {
+        val now = ZonedDateTime.now(ZoneId.systemDefault())
+        val poolId = pool.id.lowercase()
+        val poolData = data.questPools.pools.computeIfAbsent(poolId) { QuestPoolData() }
+        val (activeFrame, frameChanged) = activePoolFrame(pool, now, poolData)
+        if (frameChanged) {
+            markDirty(player)
+        }
+        if (activeFrame == null) return
+        if (poolData.lastProcessedFrame[activeFrame.frameId] == activeFrame.startMs) return
+
+        if (poolHasTokensRemaining(pool, data)) {
+            poolData.streak = 0
+        }
+
+        pool.quests.values.forEach { entry ->
+            if (!checkPoolConditions(player, entry.processConditions, entry.questId)) return@forEach
+            if (entry.preResetTokens) setPoolTokens(data, entry.questId, 0)
+            if (entry.preStop) stopQuestIfActive(player, entry.questId)
+            if (entry.preResetHistory) resetQuestHistory(player, entry.questId)
+        }
+
+        pool.questGroups.values.forEach { entry ->
+            if (!checkPoolConditions(player, entry.processConditions, null)) return@forEach
+            val group = poolGroups[entry.groupId.lowercase()] ?: return@forEach
+            group.quests.forEach { questId ->
+                if (entry.preResetTokens) setPoolTokens(data, questId, 0)
+                if (entry.preStop) stopQuestIfActive(player, questId)
+                if (entry.preResetHistory) resetQuestHistory(player, questId)
+            }
+        }
+
+        var amountRemaining = pool.amount
+        if (pool.amountTolerance == QuestPoolAmountTolerance.COUNT_STARTED) {
+            val started = countStartedInPool(pool, data)
+            amountRemaining = max(0, amountRemaining - started)
+        }
+
+        val questEntries = pool.quests.values
+            .filter { checkPoolConditions(player, it.processConditions, it.questId) }
+            .toMutableList()
+        while (amountRemaining > 0 && questEntries.isNotEmpty()) {
+            val idx = if (pool.order == QuestPoolOrder.IN_ORDER) 0 else ThreadLocalRandom.current().nextInt(questEntries.size)
+            val entry = questEntries.removeAt(idx)
+            if (entry.selectedResetTokens) setPoolTokens(data, entry.questId, 0)
+            if (entry.selectedStop) stopQuestIfActive(player, entry.questId)
+            if (entry.selectedResetHistory) resetQuestHistory(player, entry.questId)
+            val tokens = randomTokens(entry.minTokens, entry.maxTokens)
+            if (tokens > 0) {
+                alterPoolTokens(data, entry.questId, tokens)
+                amountRemaining--
+            }
+        }
+
+        val groupEntries = pool.questGroups.values
+            .filter { checkPoolConditions(player, it.processConditions, null) }
+            .toMutableList()
+        while (amountRemaining > 0 && groupEntries.isNotEmpty()) {
+            val idx = if (pool.order == QuestPoolOrder.IN_ORDER) 0 else ThreadLocalRandom.current().nextInt(groupEntries.size)
+            val entry = groupEntries.removeAt(idx)
+            val group = poolGroups[entry.groupId.lowercase()] ?: continue
+            val questIds = group.quests.toMutableList()
+            if (pool.order == QuestPoolOrder.RANDOM) {
+                questIds.shuffle()
+            }
+            if (entry.selectedResetTokens || entry.selectedStop || entry.selectedResetHistory) {
+                group.quests.forEach { questId ->
+                    if (entry.selectedResetTokens) setPoolTokens(data, questId, 0)
+                    if (entry.selectedStop) stopQuestIfActive(player, questId)
+                    if (entry.selectedResetHistory) resetQuestHistory(player, questId)
+                }
+            }
+            var gaveAny = false
+            var remaining = max(0, entry.amount)
+            while (remaining > 0 && questIds.isNotEmpty()) {
+                val questId = if (pool.order == QuestPoolOrder.IN_ORDER) questIds.removeAt(0) else questIds.removeAt(ThreadLocalRandom.current().nextInt(questIds.size))
+                val tokens = randomTokens(entry.minTokens, entry.maxTokens)
+                if (tokens > 0) {
+                    alterPoolTokens(data, questId, tokens)
+                    gaveAny = true
+                }
+                remaining--
+            }
+            if (gaveAny) {
+                amountRemaining--
+            }
+        }
+
+        poolData.lastProcessedFrame[activeFrame.frameId] = activeFrame.startMs
+        data.questPools.pools[poolId] = poolData
+        markDirty(player)
+    }
+
+    private fun activePoolFrame(pool: QuestPoolModel, now: ZonedDateTime, poolData: QuestPoolData): Pair<ActivePoolFrame?, Boolean> {
+        val frames = if (pool.timeFrames.isEmpty()) {
+            listOf(QuestPoolTimeFrame(id = "frame_0", type = QuestPoolTimeFrameType.NONE))
+        } else {
+            pool.timeFrames
+        }
+        var changed = false
+        frames.forEach { frame ->
+            val (active, frameChanged) = resolveActiveFrame(frame, now, poolData)
+            if (frameChanged) changed = true
+            if (active != null) return Pair(active, changed)
+        }
+        return Pair(null, changed)
+    }
+
+    private fun resolveActiveFrame(frame: QuestPoolTimeFrame, now: ZonedDateTime, poolData: QuestPoolData): Pair<ActivePoolFrame?, Boolean> {
+        return when (frame.type) {
+            QuestPoolTimeFrameType.NONE -> Pair(ActivePoolFrame(frame.id, 0L, Long.MAX_VALUE), false)
+            QuestPoolTimeFrameType.REPEAT_PERIOD -> {
+                val duration = frame.durationSeconds ?: return Pair(null, false)
+                if (duration <= 0) return Pair(null, false)
+                val periodMs = duration * 1000
+                val startMs = (now.toInstant().toEpochMilli() / periodMs) * periodMs
+                Pair(ActivePoolFrame(frame.id, startMs, startMs + periodMs), false)
+            }
+            QuestPoolTimeFrameType.DAILY -> {
+                val start = frame.start ?: QuestPoolTimePoint(hour = 0, minute = 0)
+                val end = frame.end ?: QuestPoolTimePoint(hour = 23, minute = 59)
+                val startTime = LocalTime.of(start.hour ?: 0, start.minute ?: 0)
+                val endTime = LocalTime.of(end.hour ?: 23, end.minute ?: 59)
+                var startAt = now.with(startTime)
+                var endAt = now.with(endTime)
+                if (!endAt.isAfter(startAt)) endAt = endAt.plusDays(1)
+                if (now.isBefore(startAt)) {
+                    startAt = startAt.minusDays(1)
+                    endAt = endAt.minusDays(1)
+                }
+                if (now.isBefore(startAt) || !now.isBefore(endAt)) return Pair(null, false)
+                Pair(ActivePoolFrame(frame.id, startAt.toInstant().toEpochMilli(), endAt.toInstant().toEpochMilli()), false)
+            }
+            QuestPoolTimeFrameType.WEEKLY -> {
+                val start = frame.start ?: QuestPoolTimePoint(dayOfWeek = DayOfWeek.MONDAY, hour = 0, minute = 0)
+                val end = frame.end ?: QuestPoolTimePoint(dayOfWeek = DayOfWeek.SUNDAY, hour = 23, minute = 59)
+                val startDay = start.dayOfWeek ?: DayOfWeek.MONDAY
+                val endDay = end.dayOfWeek ?: DayOfWeek.SUNDAY
+                val startTime = LocalTime.of(start.hour ?: 0, start.minute ?: 0)
+                val endTime = LocalTime.of(end.hour ?: 23, end.minute ?: 59)
+                var startAt = now.with(TemporalAdjusters.previousOrSame(startDay)).with(startTime)
+                var endAt = startAt.with(TemporalAdjusters.nextOrSame(endDay)).with(endTime)
+                if (!endAt.isAfter(startAt)) endAt = endAt.plusWeeks(1)
+                if (now.isBefore(startAt)) {
+                    startAt = startAt.minusWeeks(1)
+                    endAt = endAt.minusWeeks(1)
+                }
+                if (now.isBefore(startAt) || !now.isBefore(endAt)) return Pair(null, false)
+                Pair(ActivePoolFrame(frame.id, startAt.toInstant().toEpochMilli(), endAt.toInstant().toEpochMilli()), false)
+            }
+            QuestPoolTimeFrameType.MONTHLY -> {
+                val start = frame.start ?: QuestPoolTimePoint(dayOfMonth = 1, hour = 0, minute = 0)
+                val end = frame.end ?: QuestPoolTimePoint(dayOfMonth = 31, hour = 23, minute = 59)
+                var startAt = now.withDayOfMonth(minDayOfMonth(now, start.dayOfMonth ?: 1)).with(LocalTime.of(start.hour ?: 0, start.minute ?: 0))
+                var endAt = now.withDayOfMonth(minDayOfMonth(now, end.dayOfMonth ?: 31)).with(LocalTime.of(end.hour ?: 23, end.minute ?: 59))
+                if (!endAt.isAfter(startAt)) endAt = endAt.plusMonths(1)
+                if (now.isBefore(startAt)) {
+                    startAt = startAt.minusMonths(1)
+                    endAt = endAt.minusMonths(1)
+                }
+                if (now.isBefore(startAt) || !now.isBefore(endAt)) return Pair(null, false)
+                Pair(ActivePoolFrame(frame.id, startAt.toInstant().toEpochMilli(), endAt.toInstant().toEpochMilli()), false)
+            }
+            QuestPoolTimeFrameType.YEARLY -> {
+                val start = frame.start ?: QuestPoolTimePoint(month = Month.JANUARY, dayOfMonth = 1, hour = 0, minute = 0)
+                val end = frame.end ?: QuestPoolTimePoint(month = Month.DECEMBER, dayOfMonth = 31, hour = 23, minute = 59)
+                var startAt = now.withMonth((start.month ?: Month.JANUARY).value)
+                    .withDayOfMonth(minDayOfMonth(now.withMonth((start.month ?: Month.JANUARY).value), start.dayOfMonth ?: 1))
+                    .with(LocalTime.of(start.hour ?: 0, start.minute ?: 0))
+                var endAt = now.withMonth((end.month ?: Month.DECEMBER).value)
+                    .withDayOfMonth(minDayOfMonth(now.withMonth((end.month ?: Month.DECEMBER).value), end.dayOfMonth ?: 31))
+                    .with(LocalTime.of(end.hour ?: 23, end.minute ?: 59))
+                if (!endAt.isAfter(startAt)) endAt = endAt.plusYears(1)
+                if (now.isBefore(startAt)) {
+                    startAt = startAt.minusYears(1)
+                    endAt = endAt.minusYears(1)
+                }
+                if (now.isBefore(startAt) || !now.isBefore(endAt)) return Pair(null, false)
+                Pair(ActivePoolFrame(frame.id, startAt.toInstant().toEpochMilli(), endAt.toInstant().toEpochMilli()), false)
+            }
+            QuestPoolTimeFrameType.LIMITED -> {
+                val nowMs = now.toInstant().toEpochMilli()
+                val stored = poolData.limitedFrames[frame.id]
+                if (stored != null) {
+                    val active = nowMs >= stored.startMs && nowMs < stored.endMs
+                    return Pair(if (active) ActivePoolFrame(frame.id, stored.startMs, stored.endMs) else null, false)
+                }
+                val start = frame.start ?: return Pair(null, false)
+                val end = frame.end ?: return Pair(null, false)
+                val startAt = now.withMonth((start.month ?: now.month).value)
+                    .withDayOfMonth(minDayOfMonth(now.withMonth((start.month ?: now.month).value), start.dayOfMonth ?: 1))
+                    .with(LocalTime.of(start.hour ?: 0, start.minute ?: 0))
+                var endAt = now.withMonth((end.month ?: now.month).value)
+                    .withDayOfMonth(minDayOfMonth(now.withMonth((end.month ?: now.month).value), end.dayOfMonth ?: 1))
+                    .with(LocalTime.of(end.hour ?: 0, end.minute ?: 0))
+                if (!endAt.isAfter(startAt)) endAt = endAt.plusYears(1)
+                val window = net.nemoria.quest.data.user.QuestPoolTimeWindow(
+                    startMs = startAt.toInstant().toEpochMilli(),
+                    endMs = endAt.toInstant().toEpochMilli()
+                )
+                poolData.limitedFrames[frame.id] = window
+                val active = nowMs >= window.startMs && nowMs < window.endMs
+                Pair(if (active) ActivePoolFrame(frame.id, window.startMs, window.endMs) else null, true)
+            }
+        }
+    }
+
+    private fun minDayOfMonth(base: ZonedDateTime, day: Int): Int {
+        val maxDay = base.toLocalDate().lengthOfMonth()
+        return if (day <= 0) 1 else minOf(day, maxDay)
+    }
+
+    private fun poolHasTokensRemaining(pool: QuestPoolModel, data: net.nemoria.quest.data.user.UserData): Boolean {
+        pool.quests.values.forEach { entry ->
+            if (getPoolTokens(data, entry.questId) > 0) return true
+        }
+        pool.questGroups.values.forEach { entry ->
+            val group = poolGroups[entry.groupId.lowercase()] ?: return@forEach
+            group.quests.forEach { questId ->
+                if (getPoolTokens(data, questId) > 0) return true
+            }
+        }
+        return false
+    }
+
+    private fun countStartedInPool(pool: QuestPoolModel, data: net.nemoria.quest.data.user.UserData): Int {
+        var count = 0
+        pool.quests.values.forEach { entry ->
+            if (data.activeQuests.contains(entry.questId)) count++
+        }
+        pool.questGroups.values.forEach { entry ->
+            val group = poolGroups[entry.groupId.lowercase()] ?: return@forEach
+            if (group.quests.any { data.activeQuests.contains(it) }) count++
+        }
+        return count
+    }
+
+    private fun checkPoolConditions(player: Player, conditions: List<ConditionEntry>, questId: String?): Boolean {
+        if (conditions.isEmpty()) return true
+        return checkConditions(player, conditions, questId)
+    }
+
+    private fun stopQuestIfActive(player: Player, questId: String) {
+        if (data(player).activeQuests.contains(questId)) {
+            stopQuest(player, questId, complete = false)
+        }
+    }
+
+    private fun resetQuestHistory(player: OfflinePlayer, questId: String) {
+        val data = data(player)
+        val progress = data.progress[questId] ?: return
+        progress.randomHistory.clear()
+        progress.divergeCounts.clear()
+        progress.nodeProgress.clear()
+        progress.groupState.clear()
+        data.progress[questId] = progress
+        markDirty(player)
+    }
+
+    private fun setPoolTokens(data: net.nemoria.quest.data.user.UserData, questId: String, value: Int) {
+        val key = questId.lowercase()
+        if (value <= 0) {
+            data.questPools.tokens.remove(key)
+        } else {
+            data.questPools.tokens[key] = value
+        }
+    }
+
+    private fun alterPoolTokens(data: net.nemoria.quest.data.user.UserData, questId: String, delta: Int) {
+        val key = questId.lowercase()
+        val current = data.questPools.tokens[key] ?: 0
+        val next = current + delta
+        if (next <= 0) {
+            data.questPools.tokens.remove(key)
+        } else {
+            data.questPools.tokens[key] = next
+        }
+    }
+
+    private fun getPoolTokens(data: net.nemoria.quest.data.user.UserData, questId: String): Int {
+        return data.questPools.tokens[questId.lowercase()] ?: 0
+    }
+
+    private fun randomTokens(min: Int, max: Int): Int {
+        val safeMin = if (min <= 0) 1 else min
+        val safeMax = if (max < safeMin) safeMin else max
+        return ThreadLocalRandom.current().nextInt(safeMin, safeMax + 1)
+    }
+
+    private fun isPooledQuest(questId: String): Boolean =
+        poolQuestIds.contains(questId.lowercase())
+
+    private fun hasPoolToken(player: OfflinePlayer, questId: String): Boolean {
+        val data = data(player)
+        return getPoolTokens(data, questId) > 0
+    }
+
+    private fun consumePoolToken(player: OfflinePlayer, questId: String) {
+        val data = data(player)
+        alterPoolTokens(data, questId, -1)
+        markDirty(player)
+    }
+
+    private fun handlePoolQuestEnd(player: OfflinePlayer, questId: String, outcome: String) {
+        if (!isPooledQuest(questId)) return
+        val outcomeKey = outcome.uppercase()
+        val data = data(player)
+        if (poolRefundTypesByQuestId[questId.lowercase()]?.contains(outcomeKey) == true) {
+            alterPoolTokens(data, questId, 1)
+        }
+        if (!outcomeKey.equals("SUCCESS", true)) {
+            markDirty(player)
+            return
+        }
+        val model = questRepo.findById(questId) ?: QuestModel(questId)
+        val pools = poolIdsByQuestId[questId.lowercase()].orEmpty()
+        pools.forEach { poolId ->
+            val pool = poolModels[poolId] ?: return@forEach
+            if (poolHasTokensRemaining(pool, data)) return@forEach
+            val poolData = data.questPools.pools.computeIfAbsent(poolId) { QuestPoolData() }
+            poolData.streak += 1
+            val streak = poolData.streak
+            pool.rewards.forEach { reward ->
+                if (streak < reward.minStreak) return@forEach
+                if (streak > reward.maxStreak) return@forEach
+                reward.node?.let {
+                    executePoolRewardNode(player, model, it)
+                    return@forEach
+                }
+                reward.reward?.let { executePoolReward(player, it) }
+            }
+        }
+        markDirty(player)
+    }
+
+    private fun executePoolRewardNode(player: OfflinePlayer, model: QuestModel, node: QuestObjectNode) {
+        branchRuntime.executeServerReward(player, model, node)
+    }
+
+    private fun executePoolReward(player: OfflinePlayer, reward: QuestEndObject) {
+        when (reward.type) {
+            QuestEndObjectType.SERVER_ACTIONS -> {
+                val livePlayer = player.player
+                reward.actions.forEach { act ->
+                    val parts = act.trim().split("\\s+".toRegex(), limit = 2)
+                    val key = parts.getOrNull(0)?.uppercase() ?: return@forEach
+                    val payload = parts.getOrNull(1) ?: ""
+                    when (key) {
+                        "SEND_MESSAGE" -> livePlayer?.sendMessage(renderPoolMessage(payload, player))
+                        "PERFORM_COMMAND" -> plugin.server.dispatchCommand(plugin.server.consoleSender, formatCommand(payload, player))
+                        "SEND_SOUND" -> runCatching {
+                            livePlayer?.playSound(livePlayer.location, org.bukkit.Sound.valueOf(payload.uppercase()), 1f, 1f)
+                        }
+                        "SEND_TITLE" -> {
+                            val pts = payload.split("\\s+".toRegex(), limit = 5)
+                            val fi = pts.getOrNull(0)?.toIntOrNull() ?: 10
+                            val st = pts.getOrNull(1)?.toIntOrNull() ?: 60
+                            val fo = pts.getOrNull(2)?.toIntOrNull() ?: 10
+                            val title = renderPoolMessage(pts.getOrNull(3) ?: "", player)
+                            val subtitle = renderPoolMessage(pts.getOrNull(4) ?: "", player)
+                            livePlayer?.sendTitle(title, subtitle, fi, st, fo)
+                        }
+                    }
+                }
+                reward.title?.let { t ->
+                    livePlayer?.sendTitle(
+                        renderPoolMessage(t.title ?: "", player),
+                        renderPoolMessage(t.subtitle ?: "", player),
+                        t.fadeIn, t.stay, t.fadeOut
+                    )
+                }
+                reward.sound?.let { s ->
+                    runCatching { org.bukkit.Sound.valueOf(s.uppercase()) }.onSuccess { snd ->
+                        livePlayer?.playSound(livePlayer.location, snd, 1f, 1f)
+                    }
+                }
+            }
+            QuestEndObjectType.SERVER_COMMANDS_PERFORM -> {
+                reward.commands.forEach { cmd ->
+                    plugin.server.dispatchCommand(plugin.server.consoleSender, formatCommand(cmd, player))
+                }
+            }
+            QuestEndObjectType.SERVER_LOGIC_MONEY -> {
+                val amount = evalValueFormula(reward.valueFormula) ?: 0
+                if (reward.commands.isNotEmpty()) {
+                    reward.commands.forEach { cmd ->
+                        plugin.server.dispatchCommand(plugin.server.consoleSender, formatCommand(cmd, player, amount))
+                    }
+                } else if (reward.currency != null) {
+                    val cmd = "eco give ${player.name ?: ""} $amount"
+                    plugin.server.dispatchCommand(plugin.server.consoleSender, cmd)
+                }
+            }
+        }
+    }
+
+    private fun renderPoolMessage(raw: String, player: OfflinePlayer): String {
+        val replaced = renderPlaceholders(raw, null, player)
+        return MessageFormatter.format(replaced)
     }
 
     fun handleCitizensNpcActivator(player: Player, npcId: Int) {
@@ -571,6 +1326,7 @@ class QuestService(
         if (isOnCooldown(player, model)) return StartResult.COOLDOWN
         if (!requirementsMet(model, data)) return StartResult.REQUIREMENT_FAIL
         if (!conditionsMet(model, player)) return StartResult.CONDITION_FAIL
+        if (isPooledQuest(questId) && !hasPoolToken(player, questId)) return StartResult.REQUIREMENT_FAIL
         if (!hasStartNode(model)) return StartResult.INVALID_BRANCH
         return StartResult.SUCCESS
     }
@@ -668,20 +1424,46 @@ class QuestService(
         return (chunkX.toLong() shl 32) or (chunkZ.toLong() and 0xffffffffL)
     }
 
+    private fun applyCompletedSaves(now: Long) {
+        while (true) {
+            val entry = completedSaves.poll() ?: break
+            val (uuid, version) = entry
+            pendingSaves.remove(uuid)
+            val cached = userCache[uuid] ?: continue
+            if (cached.version == version) {
+                cached.dirty = false
+                cached.lastAccess = now
+            }
+        }
+    }
+
     private fun flushDirty(forceAll: Boolean = false) {
         val now = System.currentTimeMillis()
+        if (!forceAll) {
+            applyCompletedSaves(now)
+        }
         var savedCount = 0
         userCache.forEach { (uuid, cached) ->
-            val versionSnapshot = cached.version
-            if (forceAll || cached.dirty) {
+            if (forceAll) {
                 val snapshot = copiedUser(cached.data)
                 userRepo.save(snapshot)
-                if (cached.version == versionSnapshot) {
-                    cached.dirty = false
-                    cached.lastAccess = now
-                    savedCount++
-                }
+                cached.dirty = false
+                cached.lastAccess = now
+                savedCount++
+                return@forEach
             }
+            if (!cached.dirty) return@forEach
+            if (pendingSaves.containsKey(uuid)) return@forEach
+            val versionSnapshot = cached.version
+            val snapshot = copiedUser(cached.data)
+            pendingSaves[uuid] = versionSnapshot
+            saveQueue.add(SaveRequest(uuid, versionSnapshot, snapshot))
+            savedCount++
+        }
+        if (forceAll) {
+            pendingSaves.clear()
+            saveQueue.clear()
+            completedSaves.clear()
         }
         if (forceAll || savedCount > 0) {
             DebugLog.logToFile("debug-session", "run1", "A", "QuestService.kt:87", "flushDirty completed", mapOf("forceAll" to forceAll, "cacheSize" to userCache.size, "savedCount" to savedCount))
@@ -740,6 +1522,10 @@ class QuestService(
             DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:135", "startQuest CONDITION_FAIL", mapOf("questId" to questId))
             return StartResult.CONDITION_FAIL
         }
+        if (isPooledQuest(questId) && !hasPoolToken(player, questId)) {
+            DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:136", "startQuest POOL_TOKEN_FAIL", mapOf("questId" to questId, "playerUuid" to player.uniqueId.toString()))
+            return StartResult.REQUIREMENT_FAIL
+        }
         if (!hasStartNode(model)) {
             DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:136", "startQuest INVALID_BRANCH", mapOf("questId" to questId, "branchesCount" to model.branches.size))
             return StartResult.INVALID_BRANCH
@@ -767,6 +1553,9 @@ class QuestService(
             DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:152", "startQuest branch state", mapOf("questId" to questId, "branchId" to (branchId ?: "null"), "nodeId" to (progress.currentNodeId ?: "null")))
         }
         data.progress[questId] = progress
+        if (isPooledQuest(questId)) {
+            consumePoolToken(player, questId)
+        }
         markDirty(player)
         DebugLog.logToFile("debug-session", "run1", "QUEST", "QuestService.kt:157", "startQuest starting branchRuntime", mapOf("questId" to questId))
         branchRuntime.start(player, model)
@@ -1024,7 +1813,24 @@ class QuestService(
             completedQuests = src.completedQuests.toMutableSet(),
             progress = progressCopy,
             userVariables = src.userVariables.toMutableMap(),
-            cooldowns = src.cooldowns.toMutableMap()
+            cooldowns = src.cooldowns.toMutableMap(),
+            questPools = copyQuestPools(src.questPools),
+            actionbarEnabled = src.actionbarEnabled,
+            titleEnabled = src.titleEnabled
+        )
+    }
+
+    private fun copyQuestPools(src: QuestPoolsState): QuestPoolsState {
+        val poolsCopy = src.pools.mapValues { (_, pd) ->
+            QuestPoolData(
+                streak = pd.streak,
+                lastProcessedFrame = pd.lastProcessedFrame.toMutableMap(),
+                limitedFrames = pd.limitedFrames.toMutableMap()
+            )
+        }.toMutableMap()
+        return QuestPoolsState(
+            pools = poolsCopy,
+            tokens = src.tokens.toMutableMap()
         )
     }
 
@@ -1147,15 +1953,16 @@ class QuestService(
             end.forEach { eo ->
                 when (eo.type) {
                     QuestEndObjectType.SERVER_ACTIONS -> {
+                        val livePlayer = player.player
                         eo.actions.forEach { act ->
                             val parts = act.trim().split("\\s+".toRegex(), limit = 2)
                             val key = parts.getOrNull(0)?.uppercase() ?: return@forEach
                             val payload = parts.getOrNull(1) ?: ""
                             when (key) {
-                                "SEND_MESSAGE" -> player.player?.sendMessage(render(payload, model, player))
+                                "SEND_MESSAGE" -> livePlayer?.sendMessage(render(payload, model, player))
                                 "PERFORM_COMMAND" -> plugin.server.dispatchCommand(plugin.server.consoleSender, formatCommand(payload, player))
                                 "SEND_SOUND" -> runCatching {
-                                    player.player?.playSound(player.player!!.location, org.bukkit.Sound.valueOf(payload.uppercase()), 1f, 1f)
+                                    livePlayer?.playSound(livePlayer.location, org.bukkit.Sound.valueOf(payload.uppercase()), 1f, 1f)
                                 }
                                 "SEND_TITLE" -> {
                                     val pts = payload.split("\\s+".toRegex(), limit = 5)
@@ -1164,12 +1971,12 @@ class QuestService(
                                     val fo = pts.getOrNull(2)?.toIntOrNull() ?: 10
                                     val title = render(pts.getOrNull(3) ?: "", model, player)
                                     val subtitle = render(pts.getOrNull(4) ?: "", model, player)
-                                    player.player?.sendTitle(title, subtitle, fi, st, fo)
+                                    livePlayer?.sendTitle(title, subtitle, fi, st, fo)
                                 }
                             }
                         }
                         eo.title?.let { t ->
-                            player.player?.sendTitle(
+                            livePlayer?.sendTitle(
                                 render(t.title ?: "", model, player),
                                 render(t.subtitle ?: "", model, player),
                                 t.fadeIn, t.stay, t.fadeOut
@@ -1177,7 +1984,7 @@ class QuestService(
                         }
                         eo.sound?.let { s ->
                             runCatching { org.bukkit.Sound.valueOf(s.uppercase()) }.onSuccess { snd ->
-                                player.player?.playSound(player.player!!.location, snd, 1f, 1f)
+                                livePlayer?.playSound(livePlayer.location, snd, 1f, 1f)
                             }
                         }
                     }
@@ -1207,6 +2014,7 @@ class QuestService(
             data.cooldowns[questId] = net.nemoria.quest.data.user.QuestCooldown(lastEndType = outcome.uppercase(), lastAt = System.currentTimeMillis())
             markDirty(player)
         }
+        handlePoolQuestEnd(player, questId, outcome)
         stopQuest(player, questId, complete = outcome.equals("SUCCESS", ignoreCase = true))
     }
 
@@ -1342,6 +2150,13 @@ class QuestService(
         if (kind == net.nemoria.quest.runtime.BranchRuntimeManager.MiscEventType.DISCONNECT) {
             clearActivatorParticleRuns(player.uniqueId)
             clearActivatorDialogState(player.uniqueId)
+            net.nemoria.quest.runtime.ChatHistoryManager.clear(player.uniqueId)
+            net.nemoria.quest.runtime.ChatMessageDeduplicator.clear(player.uniqueId)
+            actionbarState.remove(player.uniqueId)
+            titleState.remove(player.uniqueId)
+        }
+        if (kind == net.nemoria.quest.runtime.BranchRuntimeManager.MiscEventType.CONNECT) {
+            processPoolsForPlayer(player)
         }
         return branchRuntime.handleMiscEvent(player, kind, detail)
     }

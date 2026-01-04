@@ -9,3 +9,7 @@ gui:
     in_progress: "&eW trakcie"
     unavailable: "&cNiedostępne"
     last_completion: "&7Ostatnio: {ts}"
+  ranking:
+    title: "&eRanking"
+    line: "&7{pos}. &f{player} &8- &e{value}"
+    empty: "&7Brak danych"

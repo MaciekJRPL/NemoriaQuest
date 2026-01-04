@@ -39,6 +39,12 @@ command:
   progress:
     usage: "<prefix><secondary>Usage: <primary>/nq progress <questId> <objectiveId>"
     done: "<prefix><success>Completed objective <primary>{objective} in quest <primary>{quest}."
+  actionbar:
+    enabled: "<prefix><success>Actionbar enabled."
+    disabled: "<prefix><secondary>Actionbar disabled."
+  title:
+    enabled: "<prefix><success>Title notifications enabled."
+    disabled: "<prefix><secondary>Title notifications disabled."
   debug:
     usage: "<prefix><secondary>Usage: <primary>/nq debug <on|off>"
     enabled: "<prefix><success>Debug enabled."
@@ -61,7 +67,13 @@ help:
     - " <primary>/nq list <dark>- <secondary>List available quests"
     - " <primary>/nq info <id> <dark>- <secondary>Quest details"
     - " <primary>/nq complete <id> <dark>- <secondary>Mark quest completed"
+    - " <primary>/nq progress <id> <objective> <dark>- <secondary>Complete objective"
     - " <primary>/nq reload <dark>- <secondary>Reload config"
+    - " <primary>/nq actionbar <dark>- <secondary>Toggle actionbar"
+    - " <primary>/nq title <dark>- <secondary>Toggle title"
+    - " <primary>/nq debug <on|off> <dark>- <secondary>Toggle debug"
+    - " <primary>/nq gui <dark>- <secondary>Open quest GUI"
+    - " <primary>/nq goto <quest> <branch> <node> <dark>- <secondary>Jump to node"
     - ""
 log:
   content:

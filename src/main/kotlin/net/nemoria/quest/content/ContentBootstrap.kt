@@ -18,6 +18,7 @@ class ContentBootstrap(
     private fun ensureDirs(contentDir: File) {
         listOf(
             File(contentDir, "quests"),
+            File(contentDir, "quest_pools"),
             File(contentDir, "pools"),
             File(contentDir, "groups"),
             File(contentDir, "variables"),
