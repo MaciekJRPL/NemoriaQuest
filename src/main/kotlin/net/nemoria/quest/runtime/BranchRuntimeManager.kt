@@ -915,7 +915,7 @@ class BranchRuntimeManager(
                 sessions[player.uniqueId]?.nodeId = node.id
                 val seconds = (node.waitGoalSeconds ?: node.count.toLong()).coerceAtLeast(0)
                 if (seconds > 0) {
-                    DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:636", "executeNode PLAYER_WAIT scheduling", mapOf("questId" to model.id, "nodeId" to node.id, "seconds" to seconds, "ticks" to (seconds * 20)))
+                    DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:636", "executeNode PLAYER_WAIT scheduling", mapOf("questId" to model.id, "nodeId" to node.id, "seconds" to seconds, "ticks" to seconds * 20))
                     val task = object : BukkitRunnable() {
                         override fun run() {
                             DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:638", "executeNode PLAYER_WAIT task run", mapOf("questId" to model.id, "nodeId" to node.id))
@@ -1090,7 +1090,7 @@ class BranchRuntimeManager(
                         nextIndex = i + 1,
                         pendingDelay = 0L
                     )
-                    DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:751", "runActionQueue PROMPT_NEXT waiting", mapOf("questId" to model.id, "nodeId" to node.id, "token" to token, "nextIndex" to (i + 1)))
+                    DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:751", "runActionQueue PROMPT_NEXT waiting", mapOf("questId" to model.id, "nodeId" to node.id, "token" to token, "nextIndex" to i + 1))
                     return
                 }
                 "PROMPT_NEXT_SNEAK" -> {
@@ -1107,14 +1107,14 @@ class BranchRuntimeManager(
                         nextIndex = i + 1,
                         pendingDelay = 0L
                     )
-                    DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:765", "runActionQueue PROMPT_NEXT_SNEAK waiting", mapOf("questId" to model.id, "nodeId" to node.id, "nextIndex" to (i + 1)))
+                    DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:765", "runActionQueue PROMPT_NEXT_SNEAK waiting", mapOf("questId" to model.id, "nodeId" to node.id, "nextIndex" to i + 1))
                     return
                 }
                 "CITIZENS_NPC_NAVIGATE" -> {
                     DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:768", "runActionQueue CITIZENS_NPC_NAVIGATE", mapOf("questId" to model.id, "nodeId" to node.id, "payload" to payload, "delay" to delay))
                     val wait = scheduleCitizensNavigation(bukkitPlayer, payload)
                     if (wait) {
-                        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:770", "runActionQueue CITIZENS_NPC_NAVIGATE waiting", mapOf("questId" to model.id, "nodeId" to node.id, "nextIndex" to (i + 1)))
+                        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:770", "runActionQueue CITIZENS_NPC_NAVIGATE waiting", mapOf("questId" to model.id, "nodeId" to node.id, "nextIndex" to i + 1))
                         pendingNavigations[bukkitPlayer.uniqueId] = ActionContinuation(
                             playerId = bukkitPlayer.uniqueId,
                             questId = model.id,
@@ -2191,7 +2191,7 @@ class BranchRuntimeManager(
         if (session != null) {
             val now = System.currentTimeMillis()
             if (!storeState && now - session.lastRenderAt < 200) {
-                DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1657", "sendDivergeChoices too soon", mapOf("playerUuid" to player.uniqueId.toString(), "timeSinceLastRender" to (now - session.lastRenderAt)))
+                DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1657", "sendDivergeChoices too soon", mapOf("playerUuid" to player.uniqueId.toString(), "timeSinceLastRender" to now - session.lastRenderAt))
                 return
             }
             session.lastRenderIdx = highlightIdx
