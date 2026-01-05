@@ -5,6 +5,7 @@ import net.nemoria.quest.config.GuiItemConfig
 import net.nemoria.quest.config.GuiItemStackConfig
 import net.nemoria.quest.config.GuiItemType
 import net.nemoria.quest.config.GuiListSource
+import net.nemoria.quest.config.GuiPageConfig
 import net.nemoria.quest.config.GuiRankingSpec
 import net.nemoria.quest.config.GuiType
 import net.nemoria.quest.core.DebugLog
@@ -30,7 +31,7 @@ class GuiManager {
     fun openList(player: Player, config: GuiConfig, filterActive: Boolean = false, page: Int = 0) {
         DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:22", "openList entry", mapOf("playerUuid" to player.uniqueId.toString(), "filterActive" to filterActive, "page" to page, "guiType" to config.type.name))
         if (config.pages.isNotEmpty()) {
-            val pageId = if (filterActive && config.pages.containsKey("active")) "active" else (config.defaultPage ?: "main")
+            val pageId = if (filterActive && config.pages.containsKey("active")) "active" else config.defaultPage ?: "main"
             openPage(player, config, pageId, page, allowedQuestIds = null)
             return
         }
@@ -71,7 +72,7 @@ class GuiManager {
     fun openListFiltered(player: Player, config: GuiConfig, allowedQuestIds: Set<String>, filterActive: Boolean = false, page: Int = 0) {
         DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:54", "openListFiltered entry", mapOf("playerUuid" to player.uniqueId.toString(), "allowedCount" to allowedQuestIds.size, "filterActive" to filterActive, "page" to page, "guiType" to config.type.name))
         if (config.pages.isNotEmpty()) {
-            val pageId = if (filterActive && config.pages.containsKey("active")) "active" else (config.defaultPage ?: "main")
+            val pageId = if (filterActive && config.pages.containsKey("active")) "active" else config.defaultPage ?: "main"
             openPage(player, config, pageId, page, allowedQuestIds)
             return
         }
@@ -130,6 +131,26 @@ class GuiManager {
         val contentSlots = (pageCfg.contentSlots.takeIf { it.isNotEmpty() } ?: CONTENT_SLOTS)
             .filter { it in 0 until inv.size }
 
+        val listItem = applyPageStaticItems(player, pageCfg, inv)
+        applyPageListItems(
+            player,
+            config,
+            inv,
+            listItem,
+            all,
+            activeSet,
+            completedSet,
+            progressMap,
+            contentSlots,
+            allowedQuestIds,
+            page
+        )
+
+        player.openInventory(inv)
+        DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:149", "openPage opened", mapOf("playerUuid" to player.uniqueId.toString(), "pageId" to pageId, "page" to page))
+    }
+
+    private fun applyPageStaticItems(player: Player, pageCfg: GuiPageConfig, inv: Inventory): GuiItemConfig? {
         var listItem: GuiItemConfig? = null
         pageCfg.items.forEach { itemCfg ->
             when (itemCfg.type) {
@@ -148,7 +169,22 @@ class GuiManager {
                 }
             }
         }
+        return listItem
+    }
 
+    private fun applyPageListItems(
+        player: Player,
+        config: GuiConfig,
+        inv: Inventory,
+        listItem: GuiItemConfig?,
+        all: Collection<QuestModel>,
+        activeSet: Set<String>,
+        completedSet: Set<String>,
+        progressMap: Map<String, QuestProgress>,
+        contentSlots: List<Int>,
+        allowedQuestIds: Set<String>?,
+        page: Int
+    ) {
         listItem?.let { itemCfg ->
             val slots = (itemCfg.slots.takeIf { it.isNotEmpty() } ?: contentSlots)
                 .filter { it in 0 until inv.size }
@@ -186,9 +222,6 @@ class GuiManager {
                 inv.setItem(slot, questItem(player, model, st, progress))
             }
         }
-
-        player.openInventory(inv)
-        DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:149", "openPage opened", mapOf("playerUuid" to player.uniqueId.toString(), "pageId" to pageId, "page" to page))
     }
 
     fun openDetail(player: Player, model: QuestModel) {

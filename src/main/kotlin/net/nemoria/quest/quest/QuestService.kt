@@ -651,13 +651,27 @@ class QuestService(
             poolData.streak = 0
         }
 
+        preProcessPoolQuests(pool, player, data)
+        preProcessPoolGroups(pool, player, data)
+        var amountRemaining = computePoolAmountRemaining(pool, data)
+        amountRemaining = distributeQuestTokens(pool, player, data, amountRemaining)
+        distributeGroupTokens(pool, player, data, amountRemaining)
+
+        poolData.lastProcessedFrame[activeFrame.frameId] = activeFrame.startMs
+        data.questPools.pools[poolId] = poolData
+        markDirty(player)
+    }
+
+    private fun preProcessPoolQuests(pool: QuestPoolModel, player: Player, data: net.nemoria.quest.data.user.UserData) {
         pool.quests.values.forEach { entry ->
             if (!checkPoolConditions(player, entry.processConditions, entry.questId)) return@forEach
             if (entry.preResetTokens) setPoolTokens(data, entry.questId, 0)
             if (entry.preStop) stopQuestIfActive(player, entry.questId)
             if (entry.preResetHistory) resetQuestHistory(player, entry.questId)
         }
+    }
 
+    private fun preProcessPoolGroups(pool: QuestPoolModel, player: Player, data: net.nemoria.quest.data.user.UserData) {
         pool.questGroups.values.forEach { entry ->
             if (!checkPoolConditions(player, entry.processConditions, null)) return@forEach
             val group = poolGroups[entry.groupId.lowercase()] ?: return@forEach
@@ -667,17 +681,28 @@ class QuestService(
                 if (entry.preResetHistory) resetQuestHistory(player, questId)
             }
         }
+    }
 
+    private fun computePoolAmountRemaining(pool: QuestPoolModel, data: net.nemoria.quest.data.user.UserData): Int {
         var amountRemaining = pool.amount
         if (pool.amountTolerance == QuestPoolAmountTolerance.COUNT_STARTED) {
             val started = countStartedInPool(pool, data)
             amountRemaining = max(0, amountRemaining - started)
         }
+        return amountRemaining
+    }
 
+    private fun distributeQuestTokens(
+        pool: QuestPoolModel,
+        player: Player,
+        data: net.nemoria.quest.data.user.UserData,
+        amountRemaining: Int
+    ): Int {
+        var remainingAmount = amountRemaining
         val questEntries = pool.quests.values
             .filter { checkPoolConditions(player, it.processConditions, it.questId) }
             .toMutableList()
-        while (amountRemaining > 0 && questEntries.isNotEmpty()) {
+        while (remainingAmount > 0 && questEntries.isNotEmpty()) {
             val idx = if (pool.order == QuestPoolOrder.IN_ORDER) 0 else ThreadLocalRandom.current().nextInt(questEntries.size)
             val entry = questEntries.removeAt(idx)
             if (entry.selectedResetTokens) setPoolTokens(data, entry.questId, 0)
@@ -686,14 +711,23 @@ class QuestService(
             val tokens = randomTokens(entry.minTokens, entry.maxTokens)
             if (tokens > 0) {
                 alterPoolTokens(data, entry.questId, tokens)
-                amountRemaining--
+                remainingAmount--
             }
         }
+        return remainingAmount
+    }
 
+    private fun distributeGroupTokens(
+        pool: QuestPoolModel,
+        player: Player,
+        data: net.nemoria.quest.data.user.UserData,
+        amountRemaining: Int
+    ) {
+        var remainingAmount = amountRemaining
         val groupEntries = pool.questGroups.values
             .filter { checkPoolConditions(player, it.processConditions, null) }
             .toMutableList()
-        while (amountRemaining > 0 && groupEntries.isNotEmpty()) {
+        while (remainingAmount > 0 && groupEntries.isNotEmpty()) {
             val idx = if (pool.order == QuestPoolOrder.IN_ORDER) 0 else ThreadLocalRandom.current().nextInt(groupEntries.size)
             val entry = groupEntries.removeAt(idx)
             val group = poolGroups[entry.groupId.lowercase()] ?: continue
@@ -720,13 +754,10 @@ class QuestService(
                 remaining--
             }
             if (gaveAny) {
-                amountRemaining--
+                remainingAmount--
             }
         }
 
-        poolData.lastProcessedFrame[activeFrame.frameId] = activeFrame.startMs
-        data.questPools.pools[poolId] = poolData
-        markDirty(player)
     }
 
     private fun activePoolFrame(pool: QuestPoolModel, now: ZonedDateTime, poolData: QuestPoolData): Pair<ActivePoolFrame?, Boolean> {
@@ -747,100 +778,112 @@ class QuestService(
     private fun resolveActiveFrame(frame: QuestPoolTimeFrame, now: ZonedDateTime, poolData: QuestPoolData): Pair<ActivePoolFrame?, Boolean> {
         return when (frame.type) {
             QuestPoolTimeFrameType.NONE -> Pair(ActivePoolFrame(frame.id, 0L, Long.MAX_VALUE), false)
-            QuestPoolTimeFrameType.REPEAT_PERIOD -> {
-                val duration = frame.durationSeconds ?: return Pair(null, false)
-                if (duration <= 0) return Pair(null, false)
-                val periodMs = duration * 1000
-                val startMs = (now.toInstant().toEpochMilli() / periodMs) * periodMs
-                Pair(ActivePoolFrame(frame.id, startMs, startMs + periodMs), false)
-            }
-            QuestPoolTimeFrameType.DAILY -> {
-                val start = frame.start ?: QuestPoolTimePoint(hour = 0, minute = 0)
-                val end = frame.end ?: QuestPoolTimePoint(hour = 23, minute = 59)
-                val startTime = LocalTime.of(start.hour ?: 0, start.minute ?: 0)
-                val endTime = LocalTime.of(end.hour ?: 23, end.minute ?: 59)
-                var startAt = now.with(startTime)
-                var endAt = now.with(endTime)
-                if (!endAt.isAfter(startAt)) endAt = endAt.plusDays(1)
-                if (now.isBefore(startAt)) {
-                    startAt = startAt.minusDays(1)
-                    endAt = endAt.minusDays(1)
-                }
-                if (now.isBefore(startAt) || !now.isBefore(endAt)) return Pair(null, false)
-                Pair(ActivePoolFrame(frame.id, startAt.toInstant().toEpochMilli(), endAt.toInstant().toEpochMilli()), false)
-            }
-            QuestPoolTimeFrameType.WEEKLY -> {
-                val start = frame.start ?: QuestPoolTimePoint(dayOfWeek = DayOfWeek.MONDAY, hour = 0, minute = 0)
-                val end = frame.end ?: QuestPoolTimePoint(dayOfWeek = DayOfWeek.SUNDAY, hour = 23, minute = 59)
-                val startDay = start.dayOfWeek ?: DayOfWeek.MONDAY
-                val endDay = end.dayOfWeek ?: DayOfWeek.SUNDAY
-                val startTime = LocalTime.of(start.hour ?: 0, start.minute ?: 0)
-                val endTime = LocalTime.of(end.hour ?: 23, end.minute ?: 59)
-                var startAt = now.with(TemporalAdjusters.previousOrSame(startDay)).with(startTime)
-                var endAt = startAt.with(TemporalAdjusters.nextOrSame(endDay)).with(endTime)
-                if (!endAt.isAfter(startAt)) endAt = endAt.plusWeeks(1)
-                if (now.isBefore(startAt)) {
-                    startAt = startAt.minusWeeks(1)
-                    endAt = endAt.minusWeeks(1)
-                }
-                if (now.isBefore(startAt) || !now.isBefore(endAt)) return Pair(null, false)
-                Pair(ActivePoolFrame(frame.id, startAt.toInstant().toEpochMilli(), endAt.toInstant().toEpochMilli()), false)
-            }
-            QuestPoolTimeFrameType.MONTHLY -> {
-                val start = frame.start ?: QuestPoolTimePoint(dayOfMonth = 1, hour = 0, minute = 0)
-                val end = frame.end ?: QuestPoolTimePoint(dayOfMonth = 31, hour = 23, minute = 59)
-                var startAt = now.withDayOfMonth(minDayOfMonth(now, start.dayOfMonth ?: 1)).with(LocalTime.of(start.hour ?: 0, start.minute ?: 0))
-                var endAt = now.withDayOfMonth(minDayOfMonth(now, end.dayOfMonth ?: 31)).with(LocalTime.of(end.hour ?: 23, end.minute ?: 59))
-                if (!endAt.isAfter(startAt)) endAt = endAt.plusMonths(1)
-                if (now.isBefore(startAt)) {
-                    startAt = startAt.minusMonths(1)
-                    endAt = endAt.minusMonths(1)
-                }
-                if (now.isBefore(startAt) || !now.isBefore(endAt)) return Pair(null, false)
-                Pair(ActivePoolFrame(frame.id, startAt.toInstant().toEpochMilli(), endAt.toInstant().toEpochMilli()), false)
-            }
-            QuestPoolTimeFrameType.YEARLY -> {
-                val start = frame.start ?: QuestPoolTimePoint(month = Month.JANUARY, dayOfMonth = 1, hour = 0, minute = 0)
-                val end = frame.end ?: QuestPoolTimePoint(month = Month.DECEMBER, dayOfMonth = 31, hour = 23, minute = 59)
-                var startAt = now.withMonth((start.month ?: Month.JANUARY).value)
-                    .withDayOfMonth(minDayOfMonth(now.withMonth((start.month ?: Month.JANUARY).value), start.dayOfMonth ?: 1))
-                    .with(LocalTime.of(start.hour ?: 0, start.minute ?: 0))
-                var endAt = now.withMonth((end.month ?: Month.DECEMBER).value)
-                    .withDayOfMonth(minDayOfMonth(now.withMonth((end.month ?: Month.DECEMBER).value), end.dayOfMonth ?: 31))
-                    .with(LocalTime.of(end.hour ?: 23, end.minute ?: 59))
-                if (!endAt.isAfter(startAt)) endAt = endAt.plusYears(1)
-                if (now.isBefore(startAt)) {
-                    startAt = startAt.minusYears(1)
-                    endAt = endAt.minusYears(1)
-                }
-                if (now.isBefore(startAt) || !now.isBefore(endAt)) return Pair(null, false)
-                Pair(ActivePoolFrame(frame.id, startAt.toInstant().toEpochMilli(), endAt.toInstant().toEpochMilli()), false)
-            }
-            QuestPoolTimeFrameType.LIMITED -> {
-                val nowMs = now.toInstant().toEpochMilli()
-                val stored = poolData.limitedFrames[frame.id]
-                if (stored != null) {
-                    val active = nowMs >= stored.startMs && nowMs < stored.endMs
-                    return Pair(if (active) ActivePoolFrame(frame.id, stored.startMs, stored.endMs) else null, false)
-                }
-                val start = frame.start ?: return Pair(null, false)
-                val end = frame.end ?: return Pair(null, false)
-                val startAt = now.withMonth((start.month ?: now.month).value)
-                    .withDayOfMonth(minDayOfMonth(now.withMonth((start.month ?: now.month).value), start.dayOfMonth ?: 1))
-                    .with(LocalTime.of(start.hour ?: 0, start.minute ?: 0))
-                var endAt = now.withMonth((end.month ?: now.month).value)
-                    .withDayOfMonth(minDayOfMonth(now.withMonth((end.month ?: now.month).value), end.dayOfMonth ?: 1))
-                    .with(LocalTime.of(end.hour ?: 0, end.minute ?: 0))
-                if (!endAt.isAfter(startAt)) endAt = endAt.plusYears(1)
-                val window = net.nemoria.quest.data.user.QuestPoolTimeWindow(
-                    startMs = startAt.toInstant().toEpochMilli(),
-                    endMs = endAt.toInstant().toEpochMilli()
-                )
-                poolData.limitedFrames[frame.id] = window
-                val active = nowMs >= window.startMs && nowMs < window.endMs
-                Pair(if (active) ActivePoolFrame(frame.id, window.startMs, window.endMs) else null, true)
-            }
+            QuestPoolTimeFrameType.REPEAT_PERIOD -> resolveRepeatPeriodFrame(frame, now)
+            QuestPoolTimeFrameType.DAILY -> resolveDailyFrame(frame, now)
+            QuestPoolTimeFrameType.WEEKLY -> resolveWeeklyFrame(frame, now)
+            QuestPoolTimeFrameType.MONTHLY -> resolveMonthlyFrame(frame, now)
+            QuestPoolTimeFrameType.YEARLY -> resolveYearlyFrame(frame, now)
+            QuestPoolTimeFrameType.LIMITED -> resolveLimitedFrame(frame, now, poolData)
         }
+    }
+
+    private fun resolveRepeatPeriodFrame(frame: QuestPoolTimeFrame, now: ZonedDateTime): Pair<ActivePoolFrame?, Boolean> {
+        val duration = frame.durationSeconds ?: return Pair(null, false)
+        if (duration <= 0) return Pair(null, false)
+        val periodMs = duration * 1000
+        val startMs = now.toInstant().toEpochMilli() / periodMs * periodMs
+        return Pair(ActivePoolFrame(frame.id, startMs, startMs + periodMs), false)
+    }
+
+    private fun resolveDailyFrame(frame: QuestPoolTimeFrame, now: ZonedDateTime): Pair<ActivePoolFrame?, Boolean> {
+        val start = frame.start ?: QuestPoolTimePoint(hour = 0, minute = 0)
+        val end = frame.end ?: QuestPoolTimePoint(hour = 23, minute = 59)
+        val startTime = LocalTime.of(start.hour ?: 0, start.minute ?: 0)
+        val endTime = LocalTime.of(end.hour ?: 23, end.minute ?: 59)
+        var startAt = now.with(startTime)
+        var endAt = now.with(endTime)
+        if (!endAt.isAfter(startAt)) endAt = endAt.plusDays(1)
+        if (now.isBefore(startAt)) {
+            startAt = startAt.minusDays(1)
+            endAt = endAt.minusDays(1)
+        }
+        if (now.isBefore(startAt) || !now.isBefore(endAt)) return Pair(null, false)
+        return Pair(ActivePoolFrame(frame.id, startAt.toInstant().toEpochMilli(), endAt.toInstant().toEpochMilli()), false)
+    }
+
+    private fun resolveWeeklyFrame(frame: QuestPoolTimeFrame, now: ZonedDateTime): Pair<ActivePoolFrame?, Boolean> {
+        val start = frame.start ?: QuestPoolTimePoint(dayOfWeek = DayOfWeek.MONDAY, hour = 0, minute = 0)
+        val end = frame.end ?: QuestPoolTimePoint(dayOfWeek = DayOfWeek.SUNDAY, hour = 23, minute = 59)
+        val startDay = start.dayOfWeek ?: DayOfWeek.MONDAY
+        val endDay = end.dayOfWeek ?: DayOfWeek.SUNDAY
+        val startTime = LocalTime.of(start.hour ?: 0, start.minute ?: 0)
+        val endTime = LocalTime.of(end.hour ?: 23, end.minute ?: 59)
+        var startAt = now.with(TemporalAdjusters.previousOrSame(startDay)).with(startTime)
+        var endAt = startAt.with(TemporalAdjusters.nextOrSame(endDay)).with(endTime)
+        if (!endAt.isAfter(startAt)) endAt = endAt.plusWeeks(1)
+        if (now.isBefore(startAt)) {
+            startAt = startAt.minusWeeks(1)
+            endAt = endAt.minusWeeks(1)
+        }
+        if (now.isBefore(startAt) || !now.isBefore(endAt)) return Pair(null, false)
+        return Pair(ActivePoolFrame(frame.id, startAt.toInstant().toEpochMilli(), endAt.toInstant().toEpochMilli()), false)
+    }
+
+    private fun resolveMonthlyFrame(frame: QuestPoolTimeFrame, now: ZonedDateTime): Pair<ActivePoolFrame?, Boolean> {
+        val start = frame.start ?: QuestPoolTimePoint(dayOfMonth = 1, hour = 0, minute = 0)
+        val end = frame.end ?: QuestPoolTimePoint(dayOfMonth = 31, hour = 23, minute = 59)
+        var startAt = now.withDayOfMonth(minDayOfMonth(now, start.dayOfMonth ?: 1)).with(LocalTime.of(start.hour ?: 0, start.minute ?: 0))
+        var endAt = now.withDayOfMonth(minDayOfMonth(now, end.dayOfMonth ?: 31)).with(LocalTime.of(end.hour ?: 23, end.minute ?: 59))
+        if (!endAt.isAfter(startAt)) endAt = endAt.plusMonths(1)
+        if (now.isBefore(startAt)) {
+            startAt = startAt.minusMonths(1)
+            endAt = endAt.minusMonths(1)
+        }
+        if (now.isBefore(startAt) || !now.isBefore(endAt)) return Pair(null, false)
+        return Pair(ActivePoolFrame(frame.id, startAt.toInstant().toEpochMilli(), endAt.toInstant().toEpochMilli()), false)
+    }
+
+    private fun resolveYearlyFrame(frame: QuestPoolTimeFrame, now: ZonedDateTime): Pair<ActivePoolFrame?, Boolean> {
+        val start = frame.start ?: QuestPoolTimePoint(month = Month.JANUARY, dayOfMonth = 1, hour = 0, minute = 0)
+        val end = frame.end ?: QuestPoolTimePoint(month = Month.DECEMBER, dayOfMonth = 31, hour = 23, minute = 59)
+        var startAt = now.withMonth((start.month ?: Month.JANUARY).value)
+            .withDayOfMonth(minDayOfMonth(now.withMonth((start.month ?: Month.JANUARY).value), start.dayOfMonth ?: 1))
+            .with(LocalTime.of(start.hour ?: 0, start.minute ?: 0))
+        var endAt = now.withMonth((end.month ?: Month.DECEMBER).value)
+            .withDayOfMonth(minDayOfMonth(now.withMonth((end.month ?: Month.DECEMBER).value), end.dayOfMonth ?: 31))
+            .with(LocalTime.of(end.hour ?: 23, end.minute ?: 59))
+        if (!endAt.isAfter(startAt)) endAt = endAt.plusYears(1)
+        if (now.isBefore(startAt)) {
+            startAt = startAt.minusYears(1)
+            endAt = endAt.minusYears(1)
+        }
+        if (now.isBefore(startAt) || !now.isBefore(endAt)) return Pair(null, false)
+        return Pair(ActivePoolFrame(frame.id, startAt.toInstant().toEpochMilli(), endAt.toInstant().toEpochMilli()), false)
+    }
+
+    private fun resolveLimitedFrame(frame: QuestPoolTimeFrame, now: ZonedDateTime, poolData: QuestPoolData): Pair<ActivePoolFrame?, Boolean> {
+        val nowMs = now.toInstant().toEpochMilli()
+        val stored = poolData.limitedFrames[frame.id]
+        if (stored != null) {
+            val active = nowMs >= stored.startMs && nowMs < stored.endMs
+            return Pair(if (active) ActivePoolFrame(frame.id, stored.startMs, stored.endMs) else null, false)
+        }
+        val start = frame.start ?: return Pair(null, false)
+        val end = frame.end ?: return Pair(null, false)
+        val startAt = now.withMonth((start.month ?: now.month).value)
+            .withDayOfMonth(minDayOfMonth(now.withMonth((start.month ?: now.month).value), start.dayOfMonth ?: 1))
+            .with(LocalTime.of(start.hour ?: 0, start.minute ?: 0))
+        var endAt = now.withMonth((end.month ?: now.month).value)
+            .withDayOfMonth(minDayOfMonth(now.withMonth((end.month ?: now.month).value), end.dayOfMonth ?: 1))
+            .with(LocalTime.of(end.hour ?: 0, end.minute ?: 0))
+        if (!endAt.isAfter(startAt)) endAt = endAt.plusYears(1)
+        val window = net.nemoria.quest.data.user.QuestPoolTimeWindow(
+            startMs = startAt.toInstant().toEpochMilli(),
+            endMs = endAt.toInstant().toEpochMilli()
+        )
+        poolData.limitedFrames[frame.id] = window
+        val active = nowMs >= window.startMs && nowMs < window.endMs
+        return Pair(if (active) ActivePoolFrame(frame.id, window.startMs, window.endMs) else null, true)
     }
 
     private fun minDayOfMonth(base: ZonedDateTime, day: Int): Int {
