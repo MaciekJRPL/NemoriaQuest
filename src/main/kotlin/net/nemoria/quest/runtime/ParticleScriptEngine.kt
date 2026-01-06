@@ -382,7 +382,7 @@ class ParticleScriptEngine(
     }
 
     private fun toRgbByte(v: Double): Int {
-        val normalized = if (v <= 1.0) (v * 255.0) else v
+        val normalized = if (v <= 1.0) v * 255.0 else v
         return normalized.toInt().coerceIn(0, 255)
     }
 
