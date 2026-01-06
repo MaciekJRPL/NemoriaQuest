@@ -1,5 +1,7 @@
 # NemoriaQuest
 
+<a href="https://www.codefactor.io/repository/github/maciekjrpl/nemoriaquest/overview/main"><img src="https://www.codefactor.io/repository/github/maciekjrpl/nemoriaquest/badge/main" alt="CodeFactor" /></a>
+
 **Modularny system questów dla serwerów Minecraft Paper 1.21.x**
 
 NemoriaQuest to zaawansowany plugin do tworzenia i zarządzania questami na serwerze Minecraft. Pozwala na tworzenie złożonych, nieliniowych misji z dialogami, wyborami gracza, systemem nagród i wieloma innymi funkcjami.

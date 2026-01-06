@@ -2961,22 +2961,38 @@ class BranchRuntimeManager(
     }
 
     private fun passesPhysicalFilters(node: QuestObjectNode, detail: String?, vehicleDetail: String?): Boolean {
-        if (node.type == QuestObjectNodeType.PLAYER_BUCKET_FILL && node.bucketType != null) {
-            if (detail == null || !node.bucketType.equals(detail, true)) return false
-        }
-        if (node.type == QuestObjectNodeType.PLAYER_SHOOT_PROJECTILE && node.projectileTypes.isNotEmpty()) {
-            if (detail == null || node.projectileTypes.none { it.equals(detail, true) }) return false
-        }
-        if ((node.type == QuestObjectNodeType.PLAYER_VEHICLE_ENTER || node.type == QuestObjectNodeType.PLAYER_VEHICLE_LEAVE) && node.vehicleType != null) {
-            if (vehicleDetail == null || !node.vehicleType.equals(vehicleDetail, true)) return false
-        }
-        if (node.type == QuestObjectNodeType.PLAYER_GAIN_HEALTH && node.regainCauses.isNotEmpty()) {
-            if (detail == null || node.regainCauses.none { it.equals(detail, true) }) return false
-        }
-        if (node.type == QuestObjectNodeType.PLAYER_TAKE_DAMAGE && node.damageCauses.isNotEmpty()) {
-            if (detail == null || node.damageCauses.none { it.equals(detail, true) }) return false
-        }
+        if (!matchesBucketType(node, detail)) return false
+        if (!matchesProjectileType(node, detail)) return false
+        if (!matchesVehicleType(node, vehicleDetail)) return false
+        if (!matchesRegainCause(node, detail)) return false
+        if (!matchesDamageCause(node, detail)) return false
         return true
+    }
+
+    private fun matchesBucketType(node: QuestObjectNode, detail: String?): Boolean {
+        if (node.type != QuestObjectNodeType.PLAYER_BUCKET_FILL || node.bucketType == null) return true
+        return detail != null && node.bucketType.equals(detail, true)
+    }
+
+    private fun matchesProjectileType(node: QuestObjectNode, detail: String?): Boolean {
+        if (node.type != QuestObjectNodeType.PLAYER_SHOOT_PROJECTILE || node.projectileTypes.isEmpty()) return true
+        return detail != null && node.projectileTypes.any { it.equals(detail, true) }
+    }
+
+    private fun matchesVehicleType(node: QuestObjectNode, vehicleDetail: String?): Boolean {
+        val isVehicleNode = node.type == QuestObjectNodeType.PLAYER_VEHICLE_ENTER || node.type == QuestObjectNodeType.PLAYER_VEHICLE_LEAVE
+        if (!isVehicleNode || node.vehicleType == null) return true
+        return vehicleDetail != null && node.vehicleType.equals(vehicleDetail, true)
+    }
+
+    private fun matchesRegainCause(node: QuestObjectNode, detail: String?): Boolean {
+        if (node.type != QuestObjectNodeType.PLAYER_GAIN_HEALTH || node.regainCauses.isEmpty()) return true
+        return detail != null && node.regainCauses.any { it.equals(detail, true) }
+    }
+
+    private fun matchesDamageCause(node: QuestObjectNode, detail: String?): Boolean {
+        if (node.type != QuestObjectNodeType.PLAYER_TAKE_DAMAGE || node.damageCauses.isEmpty()) return true
+        return detail != null && node.damageCauses.any { it.equals(detail, true) }
     }
 
     private fun logPhysicalEvent(
