@@ -2414,49 +2414,82 @@ class BranchRuntimeManager(
         spawnerType: String?,
         treeType: String?
     ): Boolean {
-        if (goal.types.isNotEmpty()) {
-            val matchType = goal.types.any { it.equals(target.typeName, true) }
-            if (!matchType) {
-                DebugLog.log("BLOCK_SKIP type mismatch block=${target.typeName} goalTypes=${goal.types} node=${node.id}")
-                return false
-            }
-        }
-        if (goal.states.isNotEmpty()) {
-            val matchedStates = goal.states.count { st -> target.data.contains(st.lowercase()) }
-            val required = if (goal.statesRequiredCount == Int.MAX_VALUE) goal.states.size else goal.statesRequiredCount
-            if (matchedStates < required) {
-                DebugLog.log("BLOCK_SKIP state mismatch blockData=${target.data} goalStates=${goal.states} node=${node.id}")
-                return false
-            }
-        }
-        if (node.type == QuestObjectNodeType.PLAYER_SPAWNER_PLACE && node.blockSpawnTypes.isNotEmpty()) {
-            val sp = spawnerType?.uppercase()
-            if (sp == null || node.blockSpawnTypes.none { it.equals(sp, true) }) return false
-        }
-        if (node.type == QuestObjectNodeType.PLAYER_TREE_GROW && node.blockTreeType != null) {
-            val tree = normalizeTreeType(treeType)
-            if (tree == null || !node.blockTreeType.equals(tree, true)) return false
-        }
-        if (node.type == QuestObjectNodeType.PLAYER_BLOCK_FARM && item != null) {
-            val matName = item.type.name
-            if (!matName.endsWith("_HOE")) return false
-        }
-        if (node.type == QuestObjectNodeType.PLAYER_BLOCKS_STRIP && item != null) {
-            val matName = item.type.name
-            if (!matName.endsWith("_AXE")) return false
-        }
-        if (node.type == QuestObjectNodeType.PLAYER_MAKE_PATHS && item != null) {
-            val matName = item.type.name
-            if (!matName.endsWith("_SHOVEL") && !matName.endsWith("_SPADE")) return false
-        }
-        if (node.type == QuestObjectNodeType.PLAYER_BLOCK_FROST_WALK && kind != BlockEventType.FROST_WALK) return false
-        if (node.type == QuestObjectNodeType.PLAYER_BLOCK_FARM && goal.types.isEmpty()) {
-            if (!isFarmable(target.typeName)) return false
-        }
-        if (node.type == QuestObjectNodeType.PLAYER_MAKE_PATHS && goal.types.isEmpty()) {
-            if (!isPathable(target.typeName)) return false
+        if (!matchesBlockGoalTypes(goal, target, node)) return false
+        if (!matchesBlockGoalStates(goal, target, node)) return false
+        if (!matchesSpawnerTypeRequirement(node, spawnerType)) return false
+        if (!matchesTreeTypeRequirement(node, treeType)) return false
+        if (!matchesBlockToolRequirement(node, item)) return false
+        if (!matchesBlockEventKind(node, kind)) return false
+        if (!matchesBlockGoalFallback(goal, target, node)) return false
+        return true
+    }
+
+    private fun matchesBlockGoalTypes(
+        goal: BlockGoal,
+        target: BlockTarget,
+        node: QuestObjectNode
+    ): Boolean {
+        if (goal.types.isEmpty()) return true
+        val matchType = goal.types.any { it.equals(target.typeName, true) }
+        if (!matchType) {
+            DebugLog.log("BLOCK_SKIP type mismatch block=${target.typeName} goalTypes=${goal.types} node=${node.id}")
+            return false
         }
         return true
+    }
+
+    private fun matchesBlockGoalStates(
+        goal: BlockGoal,
+        target: BlockTarget,
+        node: QuestObjectNode
+    ): Boolean {
+        if (goal.states.isEmpty()) return true
+        val matchedStates = goal.states.count { st -> target.data.contains(st.lowercase()) }
+        val required = if (goal.statesRequiredCount == Int.MAX_VALUE) goal.states.size else goal.statesRequiredCount
+        if (matchedStates < required) {
+            DebugLog.log("BLOCK_SKIP state mismatch blockData=${target.data} goalStates=${goal.states} node=${node.id}")
+            return false
+        }
+        return true
+    }
+
+    private fun matchesSpawnerTypeRequirement(node: QuestObjectNode, spawnerType: String?): Boolean {
+        if (node.type != QuestObjectNodeType.PLAYER_SPAWNER_PLACE || node.blockSpawnTypes.isEmpty()) return true
+        val sp = spawnerType?.uppercase()
+        if (sp == null || node.blockSpawnTypes.none { it.equals(sp, true) }) return false
+        return true
+    }
+
+    private fun matchesTreeTypeRequirement(node: QuestObjectNode, treeType: String?): Boolean {
+        if (node.type != QuestObjectNodeType.PLAYER_TREE_GROW || node.blockTreeType == null) return true
+        val tree = normalizeTreeType(treeType)
+        if (tree == null || !node.blockTreeType.equals(tree, true)) return false
+        return true
+    }
+
+    private fun matchesBlockToolRequirement(node: QuestObjectNode, item: ItemStack?): Boolean {
+        if (item == null) return true
+        val matName = item.type.name
+        return when (node.type) {
+            QuestObjectNodeType.PLAYER_BLOCK_FARM -> matName.endsWith("_HOE")
+            QuestObjectNodeType.PLAYER_BLOCKS_STRIP -> matName.endsWith("_AXE")
+            QuestObjectNodeType.PLAYER_MAKE_PATHS -> matName.endsWith("_SHOVEL") || matName.endsWith("_SPADE")
+            else -> true
+        }
+    }
+
+    private fun matchesBlockEventKind(node: QuestObjectNode, kind: BlockEventType): Boolean {
+        if (node.type != QuestObjectNodeType.PLAYER_BLOCK_FROST_WALK) return true
+        return kind == BlockEventType.FROST_WALK
+    }
+
+    private fun matchesBlockGoalFallback(goal: BlockGoal, target: BlockTarget, node: QuestObjectNode): Boolean {
+        if (goal.types.isNotEmpty()) return true
+        return when (node.type) {
+            QuestObjectNodeType.PLAYER_BLOCK_FARM -> isFarmable(target.typeName)
+            QuestObjectNodeType.PLAYER_MAKE_PATHS -> isPathable(target.typeName)
+            else -> true
+        }
     }
 
     private fun matchesClick(expected: String?, action: String?): Boolean {
@@ -2956,31 +2989,87 @@ class BranchRuntimeManager(
         detail: String?,
         vehicleDetail: String?
     ) {
-        if (node.type == QuestObjectNodeType.PLAYER_BED_ENTER || node.type == QuestObjectNodeType.PLAYER_BED_LEAVE) {
-            DebugLog.log(
-                "PHYS_BED player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} type=${node.type} kind=$kind detail=$detail"
-            )
+        logPhysicalBed(node, player, model, session, kind, detail)
+        logPhysicalGainHealth(node, player, model, session, kind, amount, detail)
+        logPhysicalVehicle(node, player, model, session, kind, vehicleDetail)
+        logPhysicalProjectile(node, player, model, session, kind, amount, detail)
+        logPhysicalBurn(node, player, model, session, kind, amount)
+    }
+
+    private fun logPhysicalBed(
+        node: QuestObjectNode,
+        player: org.bukkit.entity.Player,
+        model: QuestModel,
+        session: BranchSession,
+        kind: PhysicalEventType,
+        detail: String?
+    ) {
+        if (node.type != QuestObjectNodeType.PLAYER_BED_ENTER && node.type != QuestObjectNodeType.PLAYER_BED_LEAVE) {
+            return
         }
-        if (node.type == QuestObjectNodeType.PLAYER_GAIN_HEALTH) {
-            DebugLog.log(
-                "PHYS_GAIN_HEALTH player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} kind=$kind add=$amount cause=$detail goal=${node.distanceGoal ?: node.count} prev=${session.physicalProgress.getOrDefault(node.id, 0.0)}"
-            )
+        DebugLog.log(
+            "PHYS_BED player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} type=${node.type} kind=$kind detail=$detail"
+        )
+    }
+
+    private fun logPhysicalGainHealth(
+        node: QuestObjectNode,
+        player: org.bukkit.entity.Player,
+        model: QuestModel,
+        session: BranchSession,
+        kind: PhysicalEventType,
+        amount: Double,
+        detail: String?
+    ) {
+        if (node.type != QuestObjectNodeType.PLAYER_GAIN_HEALTH) return
+        DebugLog.log(
+            "PHYS_GAIN_HEALTH player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} kind=$kind add=$amount cause=$detail goal=${node.distanceGoal ?: node.count} prev=${session.physicalProgress.getOrDefault(node.id, 0.0)}"
+        )
+    }
+
+    private fun logPhysicalVehicle(
+        node: QuestObjectNode,
+        player: org.bukkit.entity.Player,
+        model: QuestModel,
+        session: BranchSession,
+        kind: PhysicalEventType,
+        vehicleDetail: String?
+    ) {
+        if (node.type != QuestObjectNodeType.PLAYER_VEHICLE_ENTER && node.type != QuestObjectNodeType.PLAYER_VEHICLE_LEAVE) {
+            return
         }
-        if (node.type == QuestObjectNodeType.PLAYER_VEHICLE_ENTER || node.type == QuestObjectNodeType.PLAYER_VEHICLE_LEAVE) {
-            DebugLog.log(
-                "PHYS_VEHICLE player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} type=${node.type} kind=$kind detail=$vehicleDetail goal=${node.distanceGoal ?: node.count} prev=${session.physicalProgress.getOrDefault(node.id, 0.0)}"
-            )
-        }
-        if (node.type == QuestObjectNodeType.PLAYER_SHOOT_PROJECTILE) {
-            DebugLog.log(
-                "PHYS_PROJECTILE player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} kind=$kind add=$amount detail=$detail goal=${node.distanceGoal ?: node.count} prev=${session.physicalProgress.getOrDefault(node.id, 0.0)}"
-            )
-        }
-        if (node.type == QuestObjectNodeType.PLAYER_BURN) {
-            DebugLog.log(
-                "PHYS_BURN player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} kind=$kind add=$amount goal=${node.distanceGoal ?: node.count} prev=${session.physicalProgress.getOrDefault(node.id, 0.0)}"
-            )
-        }
+        DebugLog.log(
+            "PHYS_VEHICLE player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} type=${node.type} kind=$kind detail=$vehicleDetail goal=${node.distanceGoal ?: node.count} prev=${session.physicalProgress.getOrDefault(node.id, 0.0)}"
+        )
+    }
+
+    private fun logPhysicalProjectile(
+        node: QuestObjectNode,
+        player: org.bukkit.entity.Player,
+        model: QuestModel,
+        session: BranchSession,
+        kind: PhysicalEventType,
+        amount: Double,
+        detail: String?
+    ) {
+        if (node.type != QuestObjectNodeType.PLAYER_SHOOT_PROJECTILE) return
+        DebugLog.log(
+            "PHYS_PROJECTILE player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} kind=$kind add=$amount detail=$detail goal=${node.distanceGoal ?: node.count} prev=${session.physicalProgress.getOrDefault(node.id, 0.0)}"
+        )
+    }
+
+    private fun logPhysicalBurn(
+        node: QuestObjectNode,
+        player: org.bukkit.entity.Player,
+        model: QuestModel,
+        session: BranchSession,
+        kind: PhysicalEventType,
+        amount: Double
+    ) {
+        if (node.type != QuestObjectNodeType.PLAYER_BURN) return
+        DebugLog.log(
+            "PHYS_BURN player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} kind=$kind add=$amount goal=${node.distanceGoal ?: node.count} prev=${session.physicalProgress.getOrDefault(node.id, 0.0)}"
+        )
     }
 
     private fun computePhysicalGoal(node: QuestObjectNode): Double =
