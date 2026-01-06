@@ -319,29 +319,44 @@ enum class QuestObjectNodeType {
     PLAYER_BLOCK_FROST_WALK,
     PLAYER_MAKE_PATHS,
     PLAYER_SPAWNER_PLACE,
-    PLAYER_TREE_GROW
+    PLAYER_TREE_GROW;
+
+    companion object {
+        val PLAYER_BLOCK_TYPES = setOf(
+            PLAYER_BLOCKS_BREAK,
+            PLAYER_BLOCKS_PLACE,
+            PLAYER_BLOCKS_INTERACT,
+            PLAYER_BLOCKS_IGNITE,
+            PLAYER_BLOCKS_STRIP,
+            PLAYER_BLOCK_FARM,
+            PLAYER_BLOCK_FROST_WALK,
+            PLAYER_MAKE_PATHS,
+            PLAYER_SPAWNER_PLACE,
+            PLAYER_TREE_GROW
+        )
+        val PLAYER_ITEM_TYPES = setOf(
+            PLAYER_ITEMS_ACQUIRE,
+            PLAYER_ITEMS_BREW,
+            PLAYER_ITEMS_CONSUME,
+            PLAYER_ITEMS_CONTAINER_PUT,
+            PLAYER_ITEMS_CONTAINER_TAKE,
+            PLAYER_ITEMS_CRAFT,
+            PLAYER_ITEMS_DROP,
+            PLAYER_ITEMS_ENCHANT,
+            PLAYER_ITEMS_FISH,
+            PLAYER_ITEMS_INTERACT,
+            PLAYER_ITEMS_MELT,
+            PLAYER_ITEMS_PICKUP,
+            PLAYER_ITEMS_REPAIR,
+            PLAYER_ITEMS_REQUIRE,
+            PLAYER_ITEMS_THROW,
+            PLAYER_ITEMS_TRADE
+        )
+    }
 }
 
 fun QuestObjectNodeType.isPlayerItemNode(): Boolean =
-    when (this) {
-        QuestObjectNodeType.PLAYER_ITEMS_ACQUIRE,
-        QuestObjectNodeType.PLAYER_ITEMS_BREW,
-        QuestObjectNodeType.PLAYER_ITEMS_CONSUME,
-        QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_PUT,
-        QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_TAKE,
-        QuestObjectNodeType.PLAYER_ITEMS_CRAFT,
-        QuestObjectNodeType.PLAYER_ITEMS_DROP,
-        QuestObjectNodeType.PLAYER_ITEMS_ENCHANT,
-        QuestObjectNodeType.PLAYER_ITEMS_FISH,
-        QuestObjectNodeType.PLAYER_ITEMS_INTERACT,
-        QuestObjectNodeType.PLAYER_ITEMS_MELT,
-        QuestObjectNodeType.PLAYER_ITEMS_PICKUP,
-        QuestObjectNodeType.PLAYER_ITEMS_REPAIR,
-        QuestObjectNodeType.PLAYER_ITEMS_REQUIRE,
-        QuestObjectNodeType.PLAYER_ITEMS_THROW,
-        QuestObjectNodeType.PLAYER_ITEMS_TRADE -> true
-        else -> false
-    }
+    this in QuestObjectNodeType.PLAYER_ITEM_TYPES
 
 fun QuestObjectNodeType.isPlayerEntityNode(): Boolean =
     when (this) {

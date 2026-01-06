@@ -281,23 +281,22 @@ object QuestContentLoader {
         )
     }
 
+    private fun parseTitleSettings(sec: org.bukkit.configuration.ConfigurationSection?): TitleSettings? {
+        if (sec == null) return null
+        return TitleSettings(
+            fadeIn = sec.getInt("fade_in", 10),
+            stay = sec.getInt("stay", 60),
+            fadeOut = sec.getInt("fade_out", 10),
+            title = sec.getString("title"),
+            subtitle = sec.getString("subtitle")
+        )
+    }
+
     internal fun parseObjectNode(id: String, sec: org.bukkit.configuration.ConfigurationSection?): QuestObjectNode? {
         if (sec == null) return null
         val typeRaw = sec.getString("type")?.uppercase() ?: "SERVER_ACTIONS"
         val type = runCatching { QuestObjectNodeType.valueOf(typeRaw) }.getOrDefault(QuestObjectNodeType.SERVER_ACTIONS)
-        val isPlayerBlockType = when (type) {
-            QuestObjectNodeType.PLAYER_BLOCKS_BREAK,
-            QuestObjectNodeType.PLAYER_BLOCKS_PLACE,
-            QuestObjectNodeType.PLAYER_BLOCKS_INTERACT,
-            QuestObjectNodeType.PLAYER_BLOCKS_IGNITE,
-            QuestObjectNodeType.PLAYER_BLOCKS_STRIP,
-            QuestObjectNodeType.PLAYER_BLOCK_FARM,
-            QuestObjectNodeType.PLAYER_BLOCK_FROST_WALK,
-            QuestObjectNodeType.PLAYER_MAKE_PATHS,
-            QuestObjectNodeType.PLAYER_SPAWNER_PLACE,
-            QuestObjectNodeType.PLAYER_TREE_GROW -> true
-            else -> false
-        }
+        val isPlayerBlockType = type in QuestObjectNodeType.PLAYER_BLOCK_TYPES
         val desc = sec.getString("objective_detail") ?: sec.getString("description")
         val actions = sec.getStringList("actions")
         val msgRaw = sec.get("messages") ?: sec.get("message")
@@ -333,15 +332,7 @@ object QuestContentLoader {
         val questId = sec.getString("quest") ?: sec.getString("quest_id")
         val valueFormula = sec.getString("value_formula")
         val sound = sec.getString("sound")
-        val title = sec.getConfigurationSection("title")?.let { t ->
-            TitleSettings(
-                fadeIn = t.getInt("fade_in", 10),
-                stay = t.getInt("stay", 60),
-                fadeOut = t.getInt("fade_out", 10),
-                title = t.getString("title"),
-                subtitle = t.getString("subtitle")
-            )
-        }
+        val title = parseTitleSettings(sec.getConfigurationSection("title"))
         val startNotify = sec.getConfigurationSection("start_notify")?.let { n ->
             val rawMsg = n.get("message")
             val messages = when (rawMsg) {
@@ -843,15 +834,7 @@ object QuestContentLoader {
         val currency = sec.getString("currency")
         val valueFormula = sec.getString("value_formula")
         val sound = sec.getString("sound")
-        val title = sec.getConfigurationSection("title")?.let { t ->
-            TitleSettings(
-                fadeIn = t.getInt("fade_in", 10),
-                stay = t.getInt("stay", 60),
-                fadeOut = t.getInt("fade_out", 10),
-                title = t.getString("title"),
-                subtitle = t.getString("subtitle")
-            )
-        }
+        val title = parseTitleSettings(sec.getConfigurationSection("title"))
         return QuestEndObject(
             type = type,
             actions = actions,

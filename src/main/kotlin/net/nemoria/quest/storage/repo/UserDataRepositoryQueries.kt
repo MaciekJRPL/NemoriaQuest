@@ -3,6 +3,8 @@ package net.nemoria.quest.storage.repo
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import net.nemoria.quest.data.user.ObjectiveState
+import net.nemoria.quest.data.user.QuestCooldown
+import net.nemoria.quest.data.user.QuestPoolsState
 import net.nemoria.quest.data.user.QuestProgress
 import net.nemoria.quest.data.user.UserData
 import java.sql.PreparedStatement
@@ -40,5 +42,22 @@ internal object UserDataRepositoryQueries {
             }
             map
         }
+    }
+
+    fun parseStringMap(raw: String?, gson: Gson): MutableMap<String, String> {
+        if (raw.isNullOrBlank()) return mutableMapOf()
+        val type = object : TypeToken<Map<String, String>>() {}.type
+        return runCatching { gson.fromJson<Map<String, String>>(raw, type).toMutableMap() }.getOrElse { mutableMapOf() }
+    }
+
+    fun parseCooldowns(raw: String?, gson: Gson): MutableMap<String, QuestCooldown> {
+        if (raw.isNullOrBlank()) return mutableMapOf()
+        val type = object : TypeToken<Map<String, QuestCooldown>>() {}.type
+        return runCatching { gson.fromJson<Map<String, QuestCooldown>>(raw, type).toMutableMap() }.getOrElse { mutableMapOf() }
+    }
+
+    fun parsePools(raw: String?, gson: Gson): QuestPoolsState {
+        if (raw.isNullOrBlank()) return QuestPoolsState()
+        return runCatching { gson.fromJson(raw, QuestPoolsState::class.java) }.getOrElse { QuestPoolsState() }
     }
 }

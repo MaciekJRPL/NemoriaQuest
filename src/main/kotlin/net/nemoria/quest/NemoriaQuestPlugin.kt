@@ -97,23 +97,12 @@ class NemoriaQuestPlugin : JavaPlugin() {
         Services.questService.preloadParticleScripts()
         loadGuiConfigs()
         logQuestLoadSummary("log.content.action_loaded")
-        server.pluginManager.registerEvents(net.nemoria.quest.gui.GuiListener(), this)
-        server.pluginManager.registerEvents(net.nemoria.quest.listener.DivergeGuiListener(), this)
-        server.pluginManager.registerEvents(ChatHideBukkitListener(), this)
-        server.pluginManager.registerEvents(PlayerBlockListener(), this)
-        server.pluginManager.registerEvents(PlayerEntityListener(), this)
-        itemListener = PlayerItemListener()
-        server.pluginManager.registerEvents(itemListener!!, this)
-        server.pluginManager.registerEvents(PlayerMoveListener(), this)
-        server.pluginManager.registerEvents(PlayerPhysicalListener(), this)
-        server.pluginManager.registerEvents(PlayerMiscListener(), this)
+        registerListeners()
 
         PlayerBlockTracker.init(Services.storage.playerBlockRepo)
         PlayerBlockTracker.importLegacy(java.io.File(dataFolder, "player_blocks.yml"))
 
         getCommand("nemoriaquest")?.setExecutor(MainCommand(this))
-        server.pluginManager.registerEvents(QuestListeners(), this)
-        server.pluginManager.registerEvents(BranchInteractListener(), this)
     }
 
     override fun onDisable() {
@@ -176,6 +165,13 @@ class NemoriaQuestPlugin : JavaPlugin() {
         resumeActiveBranches()
         logQuestLoadSummary("log.content.action_reloaded")
         loadGuiConfigs()
+        registerListeners()
+        net.nemoria.quest.runtime.ChatHideService.clear()
+        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:191", "reloadAll completed", mapOf())
+        return true
+    }
+
+    private fun registerListeners() {
         server.pluginManager.registerEvents(net.nemoria.quest.gui.GuiListener(), this)
         server.pluginManager.registerEvents(net.nemoria.quest.listener.DivergeGuiListener(), this)
         server.pluginManager.registerEvents(ChatHideBukkitListener(), this)
@@ -188,9 +184,6 @@ class NemoriaQuestPlugin : JavaPlugin() {
         server.pluginManager.registerEvents(PlayerMiscListener(), this)
         server.pluginManager.registerEvents(QuestListeners(), this)
         server.pluginManager.registerEvents(BranchInteractListener(), this)
-        net.nemoria.quest.runtime.ChatHideService.clear()
-        net.nemoria.quest.core.DebugLog.logToFile("debug-session", "run1", "PLUGIN", "NemoriaQuestPlugin.kt:191", "reloadAll completed", mapOf())
-        return true
     }
 
     private fun initStorage(storageConfig: net.nemoria.quest.config.StorageConfig) {

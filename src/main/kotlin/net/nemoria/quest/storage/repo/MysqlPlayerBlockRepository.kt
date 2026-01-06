@@ -41,13 +41,8 @@ class MysqlPlayerBlockRepository(private val ds: HikariDataSource) : PlayerBlock
 
     override fun find(world: String, x: Int, y: Int, z: Int): PlayerBlockRepository.BlockEntry? {
         ds.connection.use { conn ->
-            conn.prepareStatement(
-                "SELECT owner, ts FROM player_blocks WHERE world=? AND x=? AND y=? AND z=?"
-            ).use { ps ->
-                ps.setString(1, world)
-                ps.setInt(2, x)
-                ps.setInt(3, y)
-                ps.setInt(4, z)
+            conn.prepareStatement(PlayerBlockRepositoryQueries.FIND_SQL).use { ps ->
+                PlayerBlockRepositoryQueries.bindKey(ps, world, x, y, z)
                 ps.executeQuery().use { rs ->
                     if (!rs.next()) return null
                     val ownerStr = rs.getString("owner")

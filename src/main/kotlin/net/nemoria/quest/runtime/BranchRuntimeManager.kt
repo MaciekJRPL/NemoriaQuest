@@ -844,22 +844,7 @@ class BranchRuntimeManager(
                 DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:553", "executeNode DIVERGE_CHAT sending choices", mapOf("questId" to model.id, "nodeId" to node.id, "choicesCount" to node.choices.size))
                 sendDivergeChoices(p, node.choices, highlightIdx = 1, storeState = true)
             }
-            QuestObjectNodeType.PLAYER_ITEMS_ACQUIRE,
-            QuestObjectNodeType.PLAYER_ITEMS_BREW,
-            QuestObjectNodeType.PLAYER_ITEMS_CONSUME,
-            QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_PUT,
-            QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_TAKE,
-            QuestObjectNodeType.PLAYER_ITEMS_CRAFT,
-            QuestObjectNodeType.PLAYER_ITEMS_DROP,
-            QuestObjectNodeType.PLAYER_ITEMS_ENCHANT,
-            QuestObjectNodeType.PLAYER_ITEMS_FISH,
-            QuestObjectNodeType.PLAYER_ITEMS_INTERACT,
-            QuestObjectNodeType.PLAYER_ITEMS_MELT,
-            QuestObjectNodeType.PLAYER_ITEMS_PICKUP,
-            QuestObjectNodeType.PLAYER_ITEMS_REPAIR,
-            QuestObjectNodeType.PLAYER_ITEMS_REQUIRE,
-            QuestObjectNodeType.PLAYER_ITEMS_THROW,
-            QuestObjectNodeType.PLAYER_ITEMS_TRADE,
+            in QuestObjectNodeType.PLAYER_ITEM_TYPES,
             QuestObjectNodeType.PLAYER_ACHIEVEMENT_AWARD,
             QuestObjectNodeType.PLAYER_CHAT,
             QuestObjectNodeType.PLAYER_CONNECT,
@@ -2427,19 +2412,7 @@ class BranchRuntimeManager(
     }
 
     private fun isPlayerBlockNode(type: QuestObjectNodeType): Boolean =
-        when (type) {
-            QuestObjectNodeType.PLAYER_BLOCKS_BREAK,
-            QuestObjectNodeType.PLAYER_BLOCKS_PLACE,
-            QuestObjectNodeType.PLAYER_BLOCKS_INTERACT,
-            QuestObjectNodeType.PLAYER_BLOCKS_IGNITE,
-            QuestObjectNodeType.PLAYER_BLOCKS_STRIP,
-            QuestObjectNodeType.PLAYER_BLOCK_FARM,
-            QuestObjectNodeType.PLAYER_BLOCK_FROST_WALK,
-            QuestObjectNodeType.PLAYER_MAKE_PATHS,
-            QuestObjectNodeType.PLAYER_SPAWNER_PLACE,
-            QuestObjectNodeType.PLAYER_TREE_GROW -> true
-            else -> false
-        }
+        type in QuestObjectNodeType.PLAYER_BLOCK_TYPES
 
     private fun isFarmable(blockType: String): Boolean =
         when (blockType.uppercase()) {

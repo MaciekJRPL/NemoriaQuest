@@ -48,13 +48,8 @@ class SqlitePlayerBlockRepository(private val ds: HikariDataSource) : PlayerBloc
     override fun find(world: String, x: Int, y: Int, z: Int): PlayerBlockRepository.BlockEntry? {
         DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqlitePlayerBlockRepository.kt:43", "find entry", mapOf("world" to world, "x" to x, "y" to y, "z" to z))
         ds.connection.use { conn ->
-            conn.prepareStatement(
-                "SELECT owner, ts FROM player_blocks WHERE world=? AND x=? AND y=? AND z=?"
-            ).use { ps ->
-                ps.setString(1, world)
-                ps.setInt(2, x)
-                ps.setInt(3, y)
-                ps.setInt(4, z)
+            conn.prepareStatement(PlayerBlockRepositoryQueries.FIND_SQL).use { ps ->
+                PlayerBlockRepositoryQueries.bindKey(ps, world, x, y, z)
                 ps.executeQuery().use { rs ->
                     if (!rs.next()) return null
                     val ownerStr = rs.getString("owner")

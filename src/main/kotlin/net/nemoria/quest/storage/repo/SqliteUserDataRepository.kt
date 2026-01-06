@@ -7,7 +7,6 @@ import net.nemoria.quest.core.DebugLog
 import java.sql.ResultSet
 import java.util.UUID
 import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
 
 class SqliteUserDataRepository(private val dataSource: HikariDataSource) : UserDataRepository {
     private val gson = Gson()
@@ -80,19 +79,14 @@ class SqliteUserDataRepository(private val dataSource: HikariDataSource) : UserD
     }
 
     private fun parseMap(raw: String?): MutableMap<String, String> {
-        if (raw.isNullOrBlank()) return mutableMapOf()
-        val type = object : TypeToken<Map<String, String>>() {}.type
-        return runCatching { gson.fromJson<Map<String, String>>(raw, type).toMutableMap() }.getOrElse { mutableMapOf() }
+        return UserDataRepositoryQueries.parseStringMap(raw, gson)
     }
 
     private fun parseCooldowns(raw: String?): MutableMap<String, QuestCooldown> {
-        if (raw.isNullOrBlank()) return mutableMapOf()
-        val type = object : TypeToken<Map<String, QuestCooldown>>() {}.type
-        return runCatching { gson.fromJson<Map<String, QuestCooldown>>(raw, type).toMutableMap() }.getOrElse { mutableMapOf() }
+        return UserDataRepositoryQueries.parseCooldowns(raw, gson)
     }
 
     private fun parsePools(raw: String?): QuestPoolsState {
-        if (raw.isNullOrBlank()) return QuestPoolsState()
-        return runCatching { gson.fromJson(raw, QuestPoolsState::class.java) }.getOrElse { QuestPoolsState() }
+        return UserDataRepositoryQueries.parsePools(raw, gson)
     }
 }
