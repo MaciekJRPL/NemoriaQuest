@@ -58,10 +58,9 @@ class SqlitePlayerBlockRepository(private val ds: HikariDataSource) : PlayerBloc
                 ps.executeQuery().use { rs ->
                     if (!rs.next()) return null
                     val ownerStr = rs.getString("owner")
-                    val owner = ownerStr?.let { runCatching { UUID.fromString(it) }.getOrNull() }
-                    val ts = rs.getTimestamp("ts")?.time ?: return null
-                    val result = PlayerBlockRepository.BlockEntry(owner, ts)
-                    DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqlitePlayerBlockRepository.kt:57", "find found", mapOf("world" to world, "x" to x, "y" to y, "z" to z, "owner" to (owner?.toString() ?: "null")))
+                    val ts = rs.getTimestamp("ts")?.time
+                    val result = PlayerBlockRepositoryQueries.parseBlockEntry(ownerStr, ts) ?: return null
+                    DebugLog.logToFile("debug-session", "run1", "STORAGE", "SqlitePlayerBlockRepository.kt:57", "find found", mapOf("world" to world, "x" to x, "y" to y, "z" to z, "owner" to (result.owner?.toString() ?: "null")))
                     return result
                 }
             }

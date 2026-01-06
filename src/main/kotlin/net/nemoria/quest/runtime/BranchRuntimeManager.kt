@@ -56,6 +56,7 @@ class BranchRuntimeManager(
     private val guiSessions: MutableMap<UUID, DivergeGuiSession> = ConcurrentHashMap()
     private val gson = GsonComponentSerializer.gson()
     private val legacySerializer = LegacyComponentSerializer.legacySection()
+    private val playerEntityNodeTypes = QuestObjectNodeType.values().filter { it.isPlayerEntityNode() }.toSet()
 
     companion object {
         private fun progressKey(branchId: String, nodeId: String): String = "$branchId:$nodeId"
@@ -863,24 +864,16 @@ class BranchRuntimeManager(
             QuestObjectNodeType.PLAYER_CHAT,
             QuestObjectNodeType.PLAYER_CONNECT,
             QuestObjectNodeType.PLAYER_DISCONNECT,
-            QuestObjectNodeType.PLAYER_RESPAWN,
-            QuestObjectNodeType.PLAYER_ENTITIES_BREED,
-            QuestObjectNodeType.PLAYER_ENTITIES_INTERACT,
-            QuestObjectNodeType.PLAYER_ENTITIES_CATCH,
-            QuestObjectNodeType.PLAYER_ENTITIES_DAMAGE,
-            QuestObjectNodeType.PLAYER_ENTITIES_DEATH_NEARBY,
-            QuestObjectNodeType.PLAYER_ENTITIES_DISMOUNT,
-            QuestObjectNodeType.PLAYER_ENTITIES_GET_DAMAGED -> {
+            QuestObjectNodeType.PLAYER_RESPAWN -> {
                 DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:609", "executeNode PLAYER_* waiting", mapOf("questId" to model.id, "nodeId" to node.id, "nodeType" to node.type.name))
                 sessions[player.uniqueId]?.nodeId = node.id
                 preloadNodeProgress(player, model, branchId, node)
             }
-            QuestObjectNodeType.PLAYER_ENTITIES_KILL,
-            QuestObjectNodeType.PLAYER_ENTITIES_MOUNT,
-            QuestObjectNodeType.PLAYER_ENTITIES_SHEAR,
-            QuestObjectNodeType.PLAYER_ENTITIES_SPAWN,
-            QuestObjectNodeType.PLAYER_ENTITIES_TAME,
-            QuestObjectNodeType.PLAYER_TURTLES_BREED,
+            in playerEntityNodeTypes -> {
+                DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:609", "executeNode PLAYER_* waiting", mapOf("questId" to model.id, "nodeId" to node.id, "nodeType" to node.type.name))
+                sessions[player.uniqueId]?.nodeId = node.id
+                preloadNodeProgress(player, model, branchId, node)
+            }
             QuestObjectNodeType.PLAYER_BLOCKS_BREAK,
             QuestObjectNodeType.PLAYER_BLOCKS_PLACE,
             QuestObjectNodeType.PLAYER_BLOCKS_INTERACT,
@@ -2577,23 +2570,7 @@ class BranchRuntimeManager(
         }
     }
 
-    private fun isPlayerEntityNode(type: QuestObjectNodeType): Boolean =
-        when (type) {
-            QuestObjectNodeType.PLAYER_ENTITIES_BREED,
-            QuestObjectNodeType.PLAYER_ENTITIES_INTERACT,
-            QuestObjectNodeType.PLAYER_ENTITIES_CATCH,
-            QuestObjectNodeType.PLAYER_ENTITIES_DAMAGE,
-            QuestObjectNodeType.PLAYER_ENTITIES_DEATH_NEARBY,
-            QuestObjectNodeType.PLAYER_ENTITIES_DISMOUNT,
-            QuestObjectNodeType.PLAYER_ENTITIES_GET_DAMAGED,
-            QuestObjectNodeType.PLAYER_ENTITIES_KILL,
-            QuestObjectNodeType.PLAYER_ENTITIES_MOUNT,
-            QuestObjectNodeType.PLAYER_ENTITIES_SHEAR,
-            QuestObjectNodeType.PLAYER_ENTITIES_SPAWN,
-            QuestObjectNodeType.PLAYER_ENTITIES_TAME,
-            QuestObjectNodeType.PLAYER_TURTLES_BREED -> true
-            else -> false
-        }
+    private fun isPlayerEntityNode(type: QuestObjectNodeType): Boolean = type.isPlayerEntityNode()
 
     internal fun handleMovementEvent(
         player: org.bukkit.entity.Player,
@@ -3163,25 +3140,7 @@ class BranchRuntimeManager(
     }
 
     private fun isPlayerItemNode(type: QuestObjectNodeType): Boolean =
-        when (type) {
-            QuestObjectNodeType.PLAYER_ITEMS_ACQUIRE,
-            QuestObjectNodeType.PLAYER_ITEMS_BREW,
-            QuestObjectNodeType.PLAYER_ITEMS_CONSUME,
-            QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_PUT,
-            QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_TAKE,
-            QuestObjectNodeType.PLAYER_ITEMS_CRAFT,
-            QuestObjectNodeType.PLAYER_ITEMS_DROP,
-            QuestObjectNodeType.PLAYER_ITEMS_ENCHANT,
-            QuestObjectNodeType.PLAYER_ITEMS_FISH,
-            QuestObjectNodeType.PLAYER_ITEMS_INTERACT,
-            QuestObjectNodeType.PLAYER_ITEMS_MELT,
-            QuestObjectNodeType.PLAYER_ITEMS_PICKUP,
-            QuestObjectNodeType.PLAYER_ITEMS_REPAIR,
-            QuestObjectNodeType.PLAYER_ITEMS_REQUIRE,
-            QuestObjectNodeType.PLAYER_ITEMS_THROW,
-            QuestObjectNodeType.PLAYER_ITEMS_TRADE -> true
-            else -> false
-        }
+        type.isPlayerItemNode()
 
     private fun matchesItem(goal: ItemStackConfig, stack: ItemStack): Boolean {
         DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2770", "matchesItem entry", mapOf("goalType" to goal.type, "stackType" to stack.type.name, "goalPotionType" to (goal.potionType ?: "null")))

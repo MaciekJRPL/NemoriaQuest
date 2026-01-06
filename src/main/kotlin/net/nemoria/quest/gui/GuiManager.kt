@@ -27,6 +27,11 @@ import kotlin.math.max
 class GuiManager {
     private val keyQuestId: NamespacedKey by lazy { NamespacedKey(Services.plugin, "quest_id") }
     private val keyGuiItemId: NamespacedKey by lazy { NamespacedKey(Services.plugin, "gui_item_id") }
+    private data class ListInventoryResult(
+        val inv: Inventory,
+        val shownCount: Int,
+        val pageItemsCount: Int
+    )
 
     fun openList(player: Player, config: GuiConfig, filterActive: Boolean = false, page: Int = 0) {
         DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:22", "openList entry", mapOf("playerUuid" to player.uniqueId.toString(), "filterActive" to filterActive, "page" to page, "guiType" to config.type.name))
@@ -35,38 +40,11 @@ class GuiManager {
             openPage(player, config, pageId, page, allowedQuestIds = null)
             return
         }
-        val holder = ListHolder(filterActive, page, config)
-        val inv = Bukkit.createInventory(holder, config.type.size, MessageFormatter.format(config.name))
-        holder.inv = inv
         val all = Services.questService.listQuests()
-        val activeSet = Services.questService.activeQuests(player)
-        val completedSet = Services.questService.completedQuests(player)
-        val progressMap = Services.questService.progress(player)
-        var shown = all.filter { !filterActive || activeSet.contains(it.id) }
-        val allowedStatuses = config.showStatus.map { it.uppercase() }.toSet()
-        if (allowedStatuses.isNotEmpty()) {
-            shown = shown.filter { allowedStatuses.contains(status(player, it, activeSet, completedSet).name) }
-        }
-        if (!config.orderQuests) {
-            shown = shown.shuffled()
-        }
-        if (config.sortQuestsByStatus) {
-            shown = shown.sortedBy { statusWeight(status(player, it, activeSet, completedSet)) }
-        }
-        val startIndex = page * PAGE_SIZE
-        val pageItems = shown.drop(startIndex).take(PAGE_SIZE)
-        DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:41", "openList filtered", mapOf("playerUuid" to player.uniqueId.toString(), "allCount" to all.size, "shownCount" to shown.size, "pageItemsCount" to pageItems.size))
-
-        fillBorder(inv)
-        pageItems.forEachIndexed { idx, model ->
-            val slot = CONTENT_SLOTS.getOrNull(idx) ?: return@forEachIndexed
-            val st = status(player, model, activeSet, completedSet)
-            val progress = progressMap[model.id]
-            inv.setItem(slot, questItem(player, model, st, progress))
-        }
-        inv.setItem(inv.size - 5, toggleItem(filterActive))
-        player.openInventory(inv)
-        DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:52", "openList opened", mapOf("playerUuid" to player.uniqueId.toString(), "pageItemsCount" to pageItems.size))
+        val result = buildListInventory(player, config, filterActive, page, all)
+        DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:41", "openList filtered", mapOf("playerUuid" to player.uniqueId.toString(), "allCount" to all.size, "shownCount" to result.shownCount, "pageItemsCount" to result.pageItemsCount))
+        player.openInventory(result.inv)
+        DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:52", "openList opened", mapOf("playerUuid" to player.uniqueId.toString(), "pageItemsCount" to result.pageItemsCount))
     }
 
     fun openListFiltered(player: Player, config: GuiConfig, allowedQuestIds: Set<String>, filterActive: Boolean = false, page: Int = 0) {
@@ -76,10 +54,22 @@ class GuiManager {
             openPage(player, config, pageId, page, allowedQuestIds)
             return
         }
+        val all = Services.questService.listQuests().filter { allowedQuestIds.contains(it.id) }
+        val result = buildListInventory(player, config, filterActive, page, all)
+        player.openInventory(result.inv)
+        DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:86", "openListFiltered opened", mapOf("playerUuid" to player.uniqueId.toString(), "pageItemsCount" to result.pageItemsCount))
+    }
+
+    private fun buildListInventory(
+        player: Player,
+        config: GuiConfig,
+        filterActive: Boolean,
+        page: Int,
+        all: Collection<QuestModel>
+    ): ListInventoryResult {
         val holder = ListHolder(filterActive, page, config)
         val inv = Bukkit.createInventory(holder, config.type.size, MessageFormatter.format(config.name))
         holder.inv = inv
-        val all = Services.questService.listQuests().filter { allowedQuestIds.contains(it.id) }
         val activeSet = Services.questService.activeQuests(player)
         val completedSet = Services.questService.completedQuests(player)
         val progressMap = Services.questService.progress(player)
@@ -105,8 +95,7 @@ class GuiManager {
             inv.setItem(slot, questItem(player, model, st, progress))
         }
         inv.setItem(inv.size - 5, toggleItem(filterActive))
-        player.openInventory(inv)
-        DebugLog.logToFile("debug-session", "run1", "GUI", "GuiManager.kt:86", "openListFiltered opened", mapOf("playerUuid" to player.uniqueId.toString(), "pageItemsCount" to pageItems.size))
+        return ListInventoryResult(inv, shown.size, pageItems.size)
     }
 
     fun openPage(player: Player, config: GuiConfig, pageId: String, page: Int = 0, allowedQuestIds: Set<String>? = null) {

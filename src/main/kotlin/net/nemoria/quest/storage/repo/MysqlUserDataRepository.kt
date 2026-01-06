@@ -49,15 +49,7 @@ class MysqlUserDataRepository(private val dataSource: HikariDataSource) : UserDa
                 ON DUPLICATE KEY UPDATE active = new.active, completed = new.completed, progress = new.progress, user_vars = new.user_vars, cooldowns = new.cooldowns, pools = new.pools, actionbar_enabled = new.actionbar_enabled, title_enabled = new.title_enabled
                 """.trimIndent()
             ).use { ps ->
-                ps.setString(1, data.uuid.toString())
-                ps.setString(2, data.activeQuests.joinToString(";"))
-                ps.setString(3, data.completedQuests.joinToString(";"))
-                ps.setString(4, gson.toJson(data.progress))
-                ps.setString(5, gson.toJson(data.userVariables))
-                ps.setString(6, gson.toJson(data.cooldowns))
-                ps.setString(7, gson.toJson(data.questPools))
-                ps.setInt(8, if (data.actionbarEnabled) 1 else 0)
-                ps.setInt(9, if (data.titleEnabled) 1 else 0)
+                UserDataRepositoryQueries.bindUser(ps, gson, data)
                 ps.executeUpdate()
             }
         }
@@ -67,20 +59,7 @@ class MysqlUserDataRepository(private val dataSource: HikariDataSource) : UserDa
         if (isBlank()) mutableSetOf() else split(";").filter { it.isNotBlank() }.toMutableSet()
 
     private fun parseProgress(raw: String?): MutableMap<String, QuestProgress> {
-        if (raw.isNullOrBlank()) return mutableMapOf()
-        val type = object : TypeToken<Map<String, QuestProgress>>() {}.type
-        return runCatching { gson.fromJson<Map<String, QuestProgress>>(raw, type).toMutableMap() }.getOrElse {
-            val map = mutableMapOf<String, QuestProgress>()
-            raw.split(";").forEach { entry ->
-                val parts = entry.split(":")
-                if (parts.size == 2) {
-                    val qp = QuestProgress()
-                    qp.objectives[parts[0]] = ObjectiveState(completed = parts[1].toIntOrNull() == 1)
-                    map[parts[0]] = qp
-                }
-            }
-            map
-        }
+        return UserDataRepositoryQueries.parseProgress(raw, gson)
     }
 
     private fun parseMap(raw: String?): MutableMap<String, String> {

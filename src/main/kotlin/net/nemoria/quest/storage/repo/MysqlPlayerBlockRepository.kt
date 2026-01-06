@@ -51,9 +51,9 @@ class MysqlPlayerBlockRepository(private val ds: HikariDataSource) : PlayerBlock
                 ps.executeQuery().use { rs ->
                     if (!rs.next()) return null
                     val ownerStr = rs.getString("owner")
-                    val owner = ownerStr?.let { runCatching { UUID.fromString(it) }.getOrNull() }
                     val ts = rs.getLong("ts")
-                    return PlayerBlockRepository.BlockEntry(owner, ts)
+                    val result = PlayerBlockRepositoryQueries.parseBlockEntry(ownerStr, ts) ?: return null
+                    return result
                 }
             }
         }

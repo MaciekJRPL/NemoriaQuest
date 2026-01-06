@@ -401,41 +401,8 @@ object QuestContentLoader {
             val gotoCase = caseSec.getString("goto")
             SwitchCase(matchAmount = matchAmt, noMatchAmount = noMatchAmt, conditions = conds, goto = gotoCase)
         } ?: emptyList()
-        val isPlayerEntityType = when (type) {
-            QuestObjectNodeType.PLAYER_ENTITIES_BREED,
-            QuestObjectNodeType.PLAYER_ENTITIES_INTERACT,
-            QuestObjectNodeType.PLAYER_ENTITIES_CATCH,
-            QuestObjectNodeType.PLAYER_ENTITIES_DAMAGE,
-            QuestObjectNodeType.PLAYER_ENTITIES_DEATH_NEARBY,
-            QuestObjectNodeType.PLAYER_ENTITIES_DISMOUNT,
-            QuestObjectNodeType.PLAYER_ENTITIES_GET_DAMAGED,
-            QuestObjectNodeType.PLAYER_ENTITIES_KILL,
-            QuestObjectNodeType.PLAYER_ENTITIES_MOUNT,
-            QuestObjectNodeType.PLAYER_ENTITIES_SHEAR,
-            QuestObjectNodeType.PLAYER_ENTITIES_SPAWN,
-            QuestObjectNodeType.PLAYER_ENTITIES_TAME -> true
-            else -> false
-        }
-        val isPlayerItemType = when (type) {
-            QuestObjectNodeType.PLAYER_CITIZENS_NPC_DELIVER_ITEMS,
-            QuestObjectNodeType.PLAYER_ITEMS_ACQUIRE,
-            QuestObjectNodeType.PLAYER_ITEMS_BREW,
-            QuestObjectNodeType.PLAYER_ITEMS_CONSUME,
-            QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_PUT,
-            QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_TAKE,
-            QuestObjectNodeType.PLAYER_ITEMS_CRAFT,
-            QuestObjectNodeType.PLAYER_ITEMS_DROP,
-            QuestObjectNodeType.PLAYER_ITEMS_ENCHANT,
-            QuestObjectNodeType.PLAYER_ITEMS_FISH,
-            QuestObjectNodeType.PLAYER_ITEMS_INTERACT,
-            QuestObjectNodeType.PLAYER_ITEMS_MELT,
-            QuestObjectNodeType.PLAYER_ITEMS_PICKUP,
-            QuestObjectNodeType.PLAYER_ITEMS_REPAIR,
-            QuestObjectNodeType.PLAYER_ITEMS_REQUIRE,
-            QuestObjectNodeType.PLAYER_ITEMS_THROW,
-            QuestObjectNodeType.PLAYER_ITEMS_TRADE -> true
-            else -> false
-        }
+        val isPlayerEntityType = type.isPlayerEntityNode()
+        val isPlayerItemType = type.isPlayerItemNode() || type == QuestObjectNodeType.PLAYER_CITIZENS_NPC_DELIVER_ITEMS
 
         val goalsRaw = sec.get("goals")
         val goalEntries = readGoalEntries(goalsRaw)

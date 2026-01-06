@@ -322,6 +322,45 @@ enum class QuestObjectNodeType {
     PLAYER_TREE_GROW
 }
 
+fun QuestObjectNodeType.isPlayerItemNode(): Boolean =
+    when (this) {
+        QuestObjectNodeType.PLAYER_ITEMS_ACQUIRE,
+        QuestObjectNodeType.PLAYER_ITEMS_BREW,
+        QuestObjectNodeType.PLAYER_ITEMS_CONSUME,
+        QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_PUT,
+        QuestObjectNodeType.PLAYER_ITEMS_CONTAINER_TAKE,
+        QuestObjectNodeType.PLAYER_ITEMS_CRAFT,
+        QuestObjectNodeType.PLAYER_ITEMS_DROP,
+        QuestObjectNodeType.PLAYER_ITEMS_ENCHANT,
+        QuestObjectNodeType.PLAYER_ITEMS_FISH,
+        QuestObjectNodeType.PLAYER_ITEMS_INTERACT,
+        QuestObjectNodeType.PLAYER_ITEMS_MELT,
+        QuestObjectNodeType.PLAYER_ITEMS_PICKUP,
+        QuestObjectNodeType.PLAYER_ITEMS_REPAIR,
+        QuestObjectNodeType.PLAYER_ITEMS_REQUIRE,
+        QuestObjectNodeType.PLAYER_ITEMS_THROW,
+        QuestObjectNodeType.PLAYER_ITEMS_TRADE -> true
+        else -> false
+    }
+
+fun QuestObjectNodeType.isPlayerEntityNode(): Boolean =
+    when (this) {
+        QuestObjectNodeType.PLAYER_ENTITIES_BREED,
+        QuestObjectNodeType.PLAYER_ENTITIES_INTERACT,
+        QuestObjectNodeType.PLAYER_ENTITIES_CATCH,
+        QuestObjectNodeType.PLAYER_ENTITIES_DAMAGE,
+        QuestObjectNodeType.PLAYER_ENTITIES_DEATH_NEARBY,
+        QuestObjectNodeType.PLAYER_ENTITIES_DISMOUNT,
+        QuestObjectNodeType.PLAYER_ENTITIES_GET_DAMAGED,
+        QuestObjectNodeType.PLAYER_ENTITIES_KILL,
+        QuestObjectNodeType.PLAYER_ENTITIES_MOUNT,
+        QuestObjectNodeType.PLAYER_ENTITIES_SHEAR,
+        QuestObjectNodeType.PLAYER_ENTITIES_SPAWN,
+        QuestObjectNodeType.PLAYER_ENTITIES_TAME,
+        QuestObjectNodeType.PLAYER_TURTLES_BREED -> true
+        else -> false
+    }
+
 data class NotifySettings(
     val message: List<String> = emptyList(),
     val sound: String? = null
