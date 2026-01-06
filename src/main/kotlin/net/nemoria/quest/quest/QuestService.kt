@@ -1260,22 +1260,57 @@ class QuestService(
                 ids.forEach { npcId ->
                     val cfg = citizensNpcActivatorConfig[npcId] ?: return@forEach
                     val npcEntity = resolveCitizensNpcEntity(npcId) ?: return@forEach
-                    if (npcEntity.world != player.world) return@forEach
-                    if (!citizensNpcProximityIds.contains(npcId)) return@forEach
                     val distSq = playerLoc.distanceSquared(npcEntity.location)
-
-                    if (hasAutoStart && citizensNpcAutoStartIds.contains(npcId) && !perNpc.containsKey(npcId)) {
-                        if (handleActivatorAutoStart(player, npcId, cfg, distSq, now, perNpc)) return@forEach
-                    }
-
-                    if (hasParticles && citizensNpcParticlesIds.contains(npcId) && distSq <= particlesRangeSq) {
-                        if (handleActivatorParticles(player, npcId, cfg, npcEntity, particlesRangeSq, dataForParticles, runsByNpc)) {
-                            return@forEach
-                        }
+                    if (handleCitizensNpcProximityEntry(
+                            player,
+                            npcId,
+                            cfg,
+                            npcEntity,
+                            distSq,
+                            now,
+                            hasAutoStart,
+                            hasParticles,
+                            perNpc,
+                            particlesRangeSq,
+                            dataForParticles,
+                            runsByNpc
+                        )
+                    ) {
+                        return@forEach
                     }
                 }
             }
         }
+    }
+
+    private fun handleCitizensNpcProximityEntry(
+        player: Player,
+        npcId: Int,
+        cfg: CitizensNpcActivatorConfig,
+        npcEntity: Entity,
+        distSq: Double,
+        now: Long,
+        hasAutoStart: Boolean,
+        hasParticles: Boolean,
+        perNpc: MutableMap<Int, ActivatorDialogState>,
+        particlesRangeSq: Double,
+        dataForParticles: net.nemoria.quest.data.user.UserData?,
+        runsByNpc: MutableMap<Int, ActivatorParticleRun>
+    ): Boolean {
+        if (npcEntity.world != player.world) return true
+        if (!citizensNpcProximityIds.contains(npcId)) return true
+
+        if (hasAutoStart && citizensNpcAutoStartIds.contains(npcId) && !perNpc.containsKey(npcId)) {
+            if (handleActivatorAutoStart(player, npcId, cfg, distSq, now, perNpc)) return true
+        }
+
+        if (hasParticles && citizensNpcParticlesIds.contains(npcId) && distSq <= particlesRangeSq) {
+            if (handleActivatorParticles(player, npcId, cfg, npcEntity, particlesRangeSq, dataForParticles, runsByNpc)) {
+                return true
+            }
+        }
+
+        return false
     }
 
     private fun handleActivatorAutoStart(
@@ -1332,38 +1367,70 @@ class QuestService(
         dataForParticles: net.nemoria.quest.data.user.UserData?,
         runsByNpc: MutableMap<Int, ActivatorParticleRun>
     ): Boolean {
-        val desiredStatus = run {
-            val data = dataForParticles ?: return@run ""
-            if (cfg.questIds.any { data.activeQuests.contains(it) }) return@run "PROGRESS"
-            if (cfg.particlesAvailableScript.isNullOrBlank()) return@run ""
-            for (questId in cfg.questIds) {
-                val model = questRepo.findById(questId) ?: continue
-                if (checkStartQuest(player, questId, model, data, viaCommand = false) == StartResult.SUCCESS) {
-                    return@run "AVAILABLE"
-                }
-            }
-            ""
-        }
+        val desiredStatus = resolveActivatorParticlesStatus(player, cfg, dataForParticles)
         if (desiredStatus.isBlank()) return false
+        val scriptId = resolveActivatorParticlesScriptId(cfg, desiredStatus) ?: return true
+        if (shouldSkipExistingActivatorParticleRun(npcId, desiredStatus, scriptId, runsByNpc)) return true
+        val handle = startActivatorParticleRun(player, npcEntity, scriptId, particlesRangeSq, cfg.particlesVerticalOffset) ?: return true
+        runsByNpc[npcId] = ActivatorParticleRun(desiredStatus, scriptId, handle)
+        return false
+    }
+
+    private fun resolveActivatorParticlesStatus(
+        player: Player,
+        cfg: CitizensNpcActivatorConfig,
+        dataForParticles: net.nemoria.quest.data.user.UserData?
+    ): String {
+        val data = dataForParticles ?: return ""
+        if (cfg.questIds.any { data.activeQuests.contains(it) }) return "PROGRESS"
+        if (cfg.particlesAvailableScript.isNullOrBlank()) return ""
+        for (questId in cfg.questIds) {
+            val model = questRepo.findById(questId) ?: continue
+            if (checkStartQuest(player, questId, model, data, viaCommand = false) == StartResult.SUCCESS) {
+                return "AVAILABLE"
+            }
+        }
+        return ""
+    }
+
+    private fun resolveActivatorParticlesScriptId(
+        cfg: CitizensNpcActivatorConfig,
+        desiredStatus: String
+    ): String? {
         val scriptId = when (desiredStatus) {
             "PROGRESS" -> cfg.particlesProgressScript
             "AVAILABLE" -> cfg.particlesAvailableScript
             else -> null
         }
-        if (scriptId.isNullOrBlank()) return true
+        return if (scriptId.isNullOrBlank()) null else scriptId
+    }
 
-        val existing = runsByNpc[npcId]
-        if (existing != null && existing.status == desiredStatus && existing.scriptId == scriptId) {
+    private fun shouldSkipExistingActivatorParticleRun(
+        npcId: Int,
+        desiredStatus: String,
+        scriptId: String,
+        runsByNpc: MutableMap<Int, ActivatorParticleRun>
+    ): Boolean {
+        val existing = runsByNpc[npcId] ?: return false
+        if (existing.status == desiredStatus && existing.scriptId == scriptId) {
             if (branchRuntime.isParticleScriptActive(existing.handle)) return true
             runsByNpc.remove(npcId)
-        } else if (existing != null) {
-            branchRuntime.stopParticleScript(existing.handle)
-            runsByNpc.remove(npcId)
+            return false
         }
+        branchRuntime.stopParticleScript(existing.handle)
+        runsByNpc.remove(npcId)
+        return false
+    }
 
+    private fun startActivatorParticleRun(
+        player: Player,
+        npcEntity: Entity,
+        scriptId: String,
+        particlesRangeSq: Double,
+        offsetY: Double
+    ): ParticleScriptEngine.Handle? {
         val npcUuid = npcEntity.uniqueId
         val npcWorld = npcEntity.world
-        val offsetY = cfg.particlesVerticalOffset
         val viewerId = player.uniqueId
         val provider = provider@{
             val p = plugin.server.getPlayer(viewerId) ?: return@provider null
@@ -1372,10 +1439,7 @@ class QuestService(
             if (p.location.distanceSquared(e.location) > particlesRangeSq) return@provider null
             e.location.clone().add(0.0, offsetY, 0.0)
         }
-
-        val handle = branchRuntime.startParticleScriptLoopAtLocation(player, scriptId, provider) ?: return true
-        runsByNpc[npcId] = ActivatorParticleRun(desiredStatus, scriptId, handle)
-        return false
+        return branchRuntime.startParticleScriptLoopAtLocation(player, scriptId, provider)
     }
 
     private fun openActivatorGuiIfAllowed(player: Player, cfg: CitizensNpcActivatorConfig) {

@@ -1,7 +1,6 @@
 package net.nemoria.quest.storage.repo
 
 import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
 import com.zaxxer.hikari.HikariDataSource
 import net.nemoria.quest.data.repo.QuestModelRepository
 import net.nemoria.quest.quest.*
@@ -9,15 +8,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 class MysqlQuestModelRepository(private val dataSource: HikariDataSource) : QuestModelRepository {
     private val gson = Gson()
-    private val objectivesType = object : TypeToken<List<QuestObjective>>() {}.type
-    private val descriptionLinesType = object : TypeToken<List<String>>() {}.type
-    private val statusItemsType = object : TypeToken<Map<QuestStatusItemState, StatusItemTemplate>>() {}.type
-    private val statusItemType = object : TypeToken<StatusItemTemplate>() {}.type
-    private val requirementsType = object : TypeToken<List<String>>() {}.type
-    private val rewardsType = object : TypeToken<QuestRewards>() {}.type
-    private val branchesType = object : TypeToken<Map<String, Branch>>() {}.type
-    private val variablesType = object : TypeToken<Map<String, String>>() {}.type
-    private val endObjectsType = object : TypeToken<Map<String, List<QuestEndObject>>>() {}.type
+    private val parser = QuestModelJsonParser(gson)
     private val cache: MutableMap<String, QuestModel> = ConcurrentHashMap()
 
     init {
@@ -25,125 +16,20 @@ class MysqlQuestModelRepository(private val dataSource: HikariDataSource) : Ques
     }
 
     override fun findById(id: String): QuestModel? {
-        cache[id]?.let { return it }
-        dataSource.connection.use { conn ->
-            conn.prepareStatement(
-                "SELECT name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators, activators_dialog, activators_dialog_auto_start_distance, activators_dialog_reset_delay, activators_dialog_reset_distance, activators_dialog_reset_notify, description_placeholder, information_message, display_priority, default_status_item, permission_start_restriction, permission_start_command_restriction, world_restriction, command_restriction, cooldown FROM quest_model WHERE id = ?"
-            ).use { ps ->
-                ps.setString(1, id)
-                ps.executeQuery().use { rs ->
-                    if (rs.next()) {
-                        val activatorsDialogAutoStartDistance =
-                            rs.getDouble("activators_dialog_auto_start_distance").let { if (rs.wasNull()) null else it }
-                        val activatorsDialogResetDelaySeconds =
-                            rs.getLong("activators_dialog_reset_delay").let { if (rs.wasNull()) null else it }
-                        val activatorsDialogResetDistance =
-                            rs.getDouble("activators_dialog_reset_distance").let { if (rs.wasNull()) null else it }
-                        val model = QuestModel(
-                            id = id,
-                            name = rs.getString("name"),
-                            description = rs.getString("description"),
-                            displayName = rs.getString("display_name"),
-                            descriptionLines = parseDescriptionLines(rs.getString("description_lines")),
-                            progressNotify = parseProgressNotify(rs.getString("progress_notify")),
-                            statusItems = parseStatusItems(rs.getString("status_items")),
-                            requirements = parseRequirements(rs.getString("requirements")),
-                            objectives = parseObjectives(rs.getString("objectives")),
-                            rewards = parseRewards(rs.getString("rewards")),
-                            saving = parseSaving(rs.getString("saving")),
-                            concurrency = parseConcurrency(rs.getString("concurrency")),
-                            players = parsePlayers(rs.getString("players")),
-                            startConditions = parseStartConditions(rs.getString("start_conditions")),
-                            completion = parseCompletion(rs.getString("completion")),
-                            activators = parseActivators(rs.getString("activators")),
-                            activatorsDialog = parseStringList(rs.getString("activators_dialog")),
-                            activatorsDialogAutoStartDistance = activatorsDialogAutoStartDistance,
-                            activatorsDialogResetDelaySeconds = activatorsDialogResetDelaySeconds,
-                            activatorsDialogResetDistance = activatorsDialogResetDistance,
-                            activatorsDialogResetNotify = parseNotifySettings(rs.getString("activators_dialog_reset_notify")),
-                            timeLimit = parseTimeLimit(rs.getString("time_limit")),
-                            variables = parseVariables(rs.getString("variables")),
-                            branches = parseBranches(rs.getString("branches")),
-                            mainBranch = rs.getString("main_branch"),
-                            endObjects = parseEndObjects(rs.getString("end_objects")),
-                            descriptionPlaceholder = rs.getString("description_placeholder"),
-                            informationMessage = rs.getString("information_message"),
-                            displayPriority = rs.getInt("display_priority").let { if (rs.wasNull()) null else it },
-                            defaultStatusItem = parseStatusItem(rs.getString("default_status_item")),
-                            permissionStartRestriction = rs.getString("permission_start_restriction"),
-                            permissionStartCommandRestriction = rs.getString("permission_start_command_restriction"),
-                            worldRestriction = parseWorldRestriction(rs.getString("world_restriction")),
-                            commandRestriction = parseCommandRestriction(rs.getString("command_restriction")),
-                            cooldown = parseCooldown(rs.getString("cooldown"))
-                        )
-                        cache[id] = model
-                        return model
-                    }
-                }
-            }
-        }
-        return null
+        return QuestModelRepositoryQueries.fetchById(
+            dataSource,
+            cache,
+            parser,
+            id
+        )
     }
 
     override fun findAll(): Collection<QuestModel> {
-        if (cache.isNotEmpty()) return cache.values
-        val list = mutableListOf<QuestModel>()
-        dataSource.connection.use { conn ->
-            conn.prepareStatement(
-                "SELECT id, name, description, display_name, description_lines, progress_notify, status_items, requirements, objectives, rewards, time_limit, variables, branches, main_branch, end_objects, saving, concurrency, players, start_conditions, completion, activators, activators_dialog, activators_dialog_auto_start_distance, activators_dialog_reset_delay, activators_dialog_reset_distance, activators_dialog_reset_notify, description_placeholder, information_message, display_priority, default_status_item, permission_start_restriction, permission_start_command_restriction, world_restriction, command_restriction, cooldown FROM quest_model"
-            ).use { ps ->
-                ps.executeQuery().use { rs ->
-                    while (rs.next()) {
-                        val activatorsDialogAutoStartDistance =
-                            rs.getDouble("activators_dialog_auto_start_distance").let { if (rs.wasNull()) null else it }
-                        val activatorsDialogResetDelaySeconds =
-                            rs.getLong("activators_dialog_reset_delay").let { if (rs.wasNull()) null else it }
-                        val activatorsDialogResetDistance =
-                            rs.getDouble("activators_dialog_reset_distance").let { if (rs.wasNull()) null else it }
-                        val model = QuestModel(
-                            id = rs.getString("id"),
-                            name = rs.getString("name"),
-                            description = rs.getString("description"),
-                            displayName = rs.getString("display_name"),
-                            descriptionLines = parseDescriptionLines(rs.getString("description_lines")),
-                            progressNotify = parseProgressNotify(rs.getString("progress_notify")),
-                            statusItems = parseStatusItems(rs.getString("status_items")),
-                            requirements = parseRequirements(rs.getString("requirements")),
-                            objectives = parseObjectives(rs.getString("objectives")),
-                            rewards = parseRewards(rs.getString("rewards")),
-                            saving = parseSaving(rs.getString("saving")),
-                            concurrency = parseConcurrency(rs.getString("concurrency")),
-                            players = parsePlayers(rs.getString("players")),
-                            startConditions = parseStartConditions(rs.getString("start_conditions")),
-                            completion = parseCompletion(rs.getString("completion")),
-                            activators = parseActivators(rs.getString("activators")),
-                            activatorsDialog = parseStringList(rs.getString("activators_dialog")),
-                            activatorsDialogAutoStartDistance = activatorsDialogAutoStartDistance,
-                            activatorsDialogResetDelaySeconds = activatorsDialogResetDelaySeconds,
-                            activatorsDialogResetDistance = activatorsDialogResetDistance,
-                            activatorsDialogResetNotify = parseNotifySettings(rs.getString("activators_dialog_reset_notify")),
-                            timeLimit = parseTimeLimit(rs.getString("time_limit")),
-                            variables = parseVariables(rs.getString("variables")),
-                            branches = parseBranches(rs.getString("branches")),
-                            mainBranch = rs.getString("main_branch"),
-                            endObjects = parseEndObjects(rs.getString("end_objects")),
-                            descriptionPlaceholder = rs.getString("description_placeholder"),
-                            informationMessage = rs.getString("information_message"),
-                            displayPriority = rs.getInt("display_priority").let { if (rs.wasNull()) null else it },
-                            defaultStatusItem = parseStatusItem(rs.getString("default_status_item")),
-                            permissionStartRestriction = rs.getString("permission_start_restriction"),
-                            permissionStartCommandRestriction = rs.getString("permission_start_command_restriction"),
-                            worldRestriction = parseWorldRestriction(rs.getString("world_restriction")),
-                            commandRestriction = parseCommandRestriction(rs.getString("command_restriction")),
-                            cooldown = parseCooldown(rs.getString("cooldown"))
-                        )
-                        cache[model.id] = model
-                        list.add(model)
-                    }
-                }
-            }
-        }
-        return list
+        return QuestModelRepositoryQueries.fetchAll(
+            dataSource,
+            cache,
+            parser
+        )
     }
 
     override fun save(model: QuestModel) {
@@ -167,103 +53,6 @@ class MysqlQuestModelRepository(private val dataSource: HikariDataSource) : Ques
         findAll()
     }
 
-    private fun parseObjectives(raw: String?): List<QuestObjective> {
-        if (raw.isNullOrBlank()) return emptyList()
-        return runCatching { gson.fromJson<List<QuestObjective>>(raw, objectivesType) }.getOrDefault(emptyList())
-    }
-
-    private fun parseDescriptionLines(raw: String?): List<String> {
-        if (raw.isNullOrBlank()) return emptyList()
-        return runCatching { gson.fromJson<List<String>>(raw, descriptionLinesType) }.getOrDefault(emptyList())
-    }
-
-    private fun parseStatusItems(raw: String?): Map<QuestStatusItemState, StatusItemTemplate> {
-        if (raw.isNullOrBlank()) return emptyMap()
-        return runCatching { gson.fromJson<Map<QuestStatusItemState, StatusItemTemplate>>(raw, statusItemsType) }.getOrDefault(emptyMap())
-    }
-
-    private fun parseStatusItem(raw: String?): StatusItemTemplate? {
-        if (raw.isNullOrBlank()) return null
-        return runCatching { gson.fromJson<StatusItemTemplate>(raw, statusItemType) }.getOrNull()
-    }
-
-    private fun parseWorldRestriction(raw: String?): WorldRestriction? {
-        if (raw.isNullOrBlank()) return null
-        return runCatching { gson.fromJson(raw, WorldRestriction::class.java) }.getOrNull()
-    }
-
-    private fun parseCommandRestriction(raw: String?): CommandRestriction? {
-        if (raw.isNullOrBlank()) return null
-        return runCatching { gson.fromJson(raw, CommandRestriction::class.java) }.getOrNull()
-    }
-
-    private fun parseCooldown(raw: String?): CooldownSettings? {
-        if (raw.isNullOrBlank()) return null
-        return runCatching { gson.fromJson(raw, CooldownSettings::class.java) }.getOrNull()
-    }
-
-    private fun parseProgressNotify(raw: String?): ProgressNotify? {
-        if (raw.isNullOrBlank()) return null
-        return runCatching { gson.fromJson(raw, ProgressNotify::class.java) }.getOrNull()
-    }
-
-    private fun parseRequirements(raw: String?): List<String> {
-        if (raw.isNullOrBlank()) return emptyList()
-        return runCatching { gson.fromJson<List<String>>(raw, requirementsType) }.getOrDefault(emptyList())
-    }
-
-    private fun parseRewards(raw: String?): QuestRewards =
-        runCatching { gson.fromJson<QuestRewards>(raw, rewardsType) }.getOrDefault(QuestRewards())
-
-    private fun parseTimeLimit(raw: String?): TimeLimit? =
-        runCatching { gson.fromJson(raw, TimeLimit::class.java) }.getOrNull()
-
-    private fun parseVariables(raw: String?): MutableMap<String, String> {
-        if (raw.isNullOrBlank()) return mutableMapOf()
-        return runCatching { gson.fromJson<Map<String, String>>(raw, variablesType)!!.toMutableMap() }.getOrDefault(mutableMapOf())
-    }
-
-    private fun parseBranches(raw: String?): Map<String, Branch> {
-        if (raw.isNullOrBlank()) return emptyMap()
-        return runCatching { gson.fromJson<Map<String, Branch>>(raw, branchesType) }.getOrDefault(emptyMap())
-    }
-
-    private fun parseEndObjects(raw: String?): Map<String, List<QuestEndObject>> {
-        if (raw.isNullOrBlank()) return emptyMap()
-        return runCatching { gson.fromJson<Map<String, List<QuestEndObject>>>(raw, endObjectsType) }.getOrDefault(emptyMap())
-    }
-
-    private fun parseSaving(raw: String?): SavingMode =
-        runCatching { gson.fromJson(raw, SavingMode::class.java) }.getOrDefault(SavingMode.ENABLED)
-
-    private fun parseConcurrency(raw: String?): Concurrency =
-        runCatching { gson.fromJson(raw, Concurrency::class.java) }.getOrDefault(Concurrency())
-
-    private fun parsePlayers(raw: String?): PlayerSettings =
-        runCatching { gson.fromJson(raw, PlayerSettings::class.java) }.getOrDefault(PlayerSettings())
-
-    private fun parseStartConditions(raw: String?): StartConditions? {
-        if (raw.isNullOrBlank()) return null
-        return runCatching { gson.fromJson(raw, StartConditions::class.java) }.getOrNull()
-    }
-
-    private fun parseCompletion(raw: String?): CompletionSettings =
-        runCatching { gson.fromJson(raw, CompletionSettings::class.java) }.getOrDefault(CompletionSettings())
-
-    private fun parseActivators(raw: String?): List<String> {
-        if (raw.isNullOrBlank()) return emptyList()
-        return runCatching { gson.fromJson<List<String>>(raw, requirementsType) }.getOrDefault(emptyList())
-    }
-
-    private fun parseStringList(raw: String?): List<String> {
-        if (raw.isNullOrBlank()) return emptyList()
-        return runCatching { gson.fromJson<List<String>>(raw, requirementsType) }.getOrDefault(emptyList())
-    }
-
-    private fun parseNotifySettings(raw: String?): NotifySettings? {
-        if (raw.isNullOrBlank()) return null
-        return runCatching { gson.fromJson(raw, NotifySettings::class.java) }.getOrNull()
-    }
 
     private fun bindModel(ps: java.sql.PreparedStatement, model: QuestModel) {
         ps.setString(1, model.id)

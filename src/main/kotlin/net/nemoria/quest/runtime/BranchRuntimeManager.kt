@@ -494,6 +494,18 @@ class BranchRuntimeManager(
             sessions[player.uniqueId]?.physicalProgress?.put(node.id, 0.0)
         }
         DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:325", "executeNode processing type", mapOf("questId" to model.id, "nodeId" to node.id, "nodeType" to node.type.name))
+        if (isMovementNode(node.type)) {
+            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:609", "executeNode PLAYER_* waiting", mapOf("questId" to model.id, "nodeId" to node.id, "nodeType" to node.type.name))
+            sessions[player.uniqueId]?.nodeId = node.id
+            preloadNodeProgress(player, model, branchId, node)
+            return
+        }
+        if (isPhysicalNode(node.type)) {
+            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:609", "executeNode PLAYER_* waiting", mapOf("questId" to model.id, "nodeId" to node.id, "nodeType" to node.type.name))
+            sessions[player.uniqueId]?.nodeId = node.id
+            preloadNodeProgress(player, model, branchId, node)
+            return
+        }
         when (node.type) {
             QuestObjectNodeType.NONE -> {
                 DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:326", "executeNode NONE", mapOf("questId" to model.id, "nodeId" to node.id, "hasPosition" to (node.position != null), "hasGoto" to (node.goto != null)))
@@ -847,33 +859,6 @@ class BranchRuntimeManager(
             QuestObjectNodeType.PLAYER_ITEMS_REQUIRE,
             QuestObjectNodeType.PLAYER_ITEMS_THROW,
             QuestObjectNodeType.PLAYER_ITEMS_TRADE,
-            QuestObjectNodeType.PLAYER_MOVE,
-            QuestObjectNodeType.PLAYER_MOVE_BY_FOOT_DISTANCE,
-            QuestObjectNodeType.PLAYER_POSITION,
-            QuestObjectNodeType.PLAYER_SWIM_DISTANCE,
-            QuestObjectNodeType.PLAYER_ELYTRA_FLY_DISTANCE,
-            QuestObjectNodeType.PLAYER_ELYTRA_LAND,
-            QuestObjectNodeType.PLAYER_FALL_DISTANCE,
-            QuestObjectNodeType.PLAYER_HORSE_JUMP,
-            QuestObjectNodeType.PLAYER_JUMP,
-            QuestObjectNodeType.PLAYER_SPRINT_DISTANCE,
-            QuestObjectNodeType.PLAYER_VEHICLE_DISTANCE,
-            QuestObjectNodeType.PLAYER_WALK_DISTANCE,
-            QuestObjectNodeType.PLAYER_BED_ENTER,
-            QuestObjectNodeType.PLAYER_BED_LEAVE,
-            QuestObjectNodeType.PLAYER_BUCKET_FILL,
-            QuestObjectNodeType.PLAYER_BURN,
-            QuestObjectNodeType.PLAYER_DIE,
-            QuestObjectNodeType.PLAYER_GAIN_HEALTH,
-            QuestObjectNodeType.PLAYER_GAIN_XP,
-            QuestObjectNodeType.PLAYER_PORTAL_ENTER,
-            QuestObjectNodeType.PLAYER_PORTAL_LEAVE,
-            QuestObjectNodeType.PLAYER_SHOOT_PROJECTILE,
-            QuestObjectNodeType.PLAYER_SNEAK,
-            QuestObjectNodeType.PLAYER_TAKE_DAMAGE,
-            QuestObjectNodeType.PLAYER_TOGGLE_SNEAK,
-            QuestObjectNodeType.PLAYER_VEHICLE_ENTER,
-            QuestObjectNodeType.PLAYER_VEHICLE_LEAVE,
             QuestObjectNodeType.PLAYER_ACHIEVEMENT_AWARD,
             QuestObjectNodeType.PLAYER_CHAT,
             QuestObjectNodeType.PLAYER_CONNECT,
@@ -929,6 +914,7 @@ class BranchRuntimeManager(
                     node.goto?.let { handleGoto(player, model, branchId, it, 0) }
                 }
             }
+            else -> Unit
         }
     }
 
@@ -985,43 +971,19 @@ class BranchRuntimeManager(
                 }
                 "SEND_TITLE" -> {
                     DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:675", "runActionQueue SEND_TITLE", mapOf("questId" to model.id, "nodeId" to node.id, "delay" to delay))
-                    schedule(delay, bukkitPlayer.uniqueId) {
-                    val partsTitle = payload.split("\\s+".toRegex(), limit = 5)
-                    val fadeIn = partsTitle.getOrNull(0)?.toIntOrNull() ?: 10
-                    val stay = partsTitle.getOrNull(1)?.toIntOrNull() ?: 60
-                    val fadeOut = partsTitle.getOrNull(2)?.toIntOrNull() ?: 10
-                    val rest = payload.substringAfter(partsTitle.take(3).joinToString(" "), "")
-                    val titles = rest.split(",", limit = 2)
-                    val titleText = MessageFormatter.format(renderRaw(titles.getOrNull(0) ?: "", model, player))
-                    val subText = MessageFormatter.format(renderRaw(titles.getOrNull(1) ?: "", model, player))
-                    bukkitPlayer.sendTitle(titleText, subText, fadeIn, stay, fadeOut)
-                }
+                    scheduleTitleAction(::schedule, delay, bukkitPlayer, model, player, payload)
                 }
                 "SEND_PARTICLES" -> {
                     DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:686", "runActionQueue SEND_PARTICLES", mapOf("questId" to model.id, "nodeId" to node.id, "payload" to payload, "delay" to delay))
-                    schedule(delay, bukkitPlayer.uniqueId) {
-                        val params = payload.split("\\s+".toRegex())
-                        val questOnly = params.getOrNull(2)?.toBooleanStrictOrNull() ?: true
-                        spawnParticles(bukkitPlayer, payload, allPlayers = !questOnly)
-                    }
+                    scheduleParticlesAction(::schedule, delay, bukkitPlayer, payload)
                 }
                 "GIVE_EFFECT" -> {
                     DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:691", "runActionQueue GIVE_EFFECT", mapOf("questId" to model.id, "nodeId" to node.id, "effect" to payload, "delay" to delay))
-                    schedule(delay, bukkitPlayer.uniqueId) { giveEffect(bukkitPlayer, payload) }
+                    scheduleGiveEffectAction(::schedule, delay, bukkitPlayer, payload)
                 }
                 "PERFORM_COMMAND" -> {
                     DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:692", "runActionQueue PERFORM_COMMAND", mapOf("questId" to model.id, "nodeId" to node.id, "delay" to delay))
-                    schedule(delay, bukkitPlayer.uniqueId) {
-                    val partsCmd = payload.split("\\s+".toRegex(), limit = 2)
-                    val asPlayer = partsCmd.getOrNull(0)?.equals("true", ignoreCase = true) == true ||
-                        partsCmd.getOrNull(0)?.equals("player", ignoreCase = true) == true
-                    val cmd = if (asPlayer) partsCmd.getOrNull(1) else payload
-                    if (!cmd.isNullOrBlank()) {
-                        val rendered = renderRaw(cmd, model, player).replace("{player}", bukkitPlayer.name)
-                        if (asPlayer) plugin.server.dispatchCommand(bukkitPlayer, rendered)
-                        else plugin.server.dispatchCommand(plugin.server.consoleSender, rendered)
-                    }
-                }
+                    schedulePerformCommandAction(::schedule, delay, bukkitPlayer, model, player, payload)
                 }
                 "PERFORM_COMMAND_AS_PLAYER" -> schedule(delay, bukkitPlayer.uniqueId) {
                     val cmd = renderRaw(payload, model, player).replace("{player}", bukkitPlayer.name)
@@ -1155,40 +1117,16 @@ class BranchRuntimeManager(
                     scheduleReward(delay, bukkitPlayer.uniqueId) { playSound(bukkitPlayer, payload) }
                 }
                 "SEND_TITLE" -> {
-                    scheduleReward(delay, bukkitPlayer.uniqueId) {
-                        val partsTitle = payload.split("\\s+".toRegex(), limit = 5)
-                        val fadeIn = partsTitle.getOrNull(0)?.toIntOrNull() ?: 10
-                        val stay = partsTitle.getOrNull(1)?.toIntOrNull() ?: 60
-                        val fadeOut = partsTitle.getOrNull(2)?.toIntOrNull() ?: 10
-                        val rest = payload.substringAfter(partsTitle.take(3).joinToString(" "), "")
-                        val titles = rest.split(",", limit = 2)
-                        val titleText = MessageFormatter.format(renderRaw(titles.getOrNull(0) ?: "", model, player))
-                        val subText = MessageFormatter.format(renderRaw(titles.getOrNull(1) ?: "", model, player))
-                        bukkitPlayer.sendTitle(titleText, subText, fadeIn, stay, fadeOut)
-                    }
+                    scheduleTitleAction(::scheduleReward, delay, bukkitPlayer, model, player, payload)
                 }
                 "SEND_PARTICLES" -> {
-                    scheduleReward(delay, bukkitPlayer.uniqueId) {
-                        val params = payload.split("\\s+".toRegex())
-                        val questOnly = params.getOrNull(2)?.toBooleanStrictOrNull() ?: true
-                        spawnParticles(bukkitPlayer, payload, allPlayers = !questOnly)
-                    }
+                    scheduleParticlesAction(::scheduleReward, delay, bukkitPlayer, payload)
                 }
                 "GIVE_EFFECT" -> {
-                    scheduleReward(delay, bukkitPlayer.uniqueId) { giveEffect(bukkitPlayer, payload) }
+                    scheduleGiveEffectAction(::scheduleReward, delay, bukkitPlayer, payload)
                 }
                 "PERFORM_COMMAND" -> {
-                    scheduleReward(delay, bukkitPlayer.uniqueId) {
-                        val partsCmd = payload.split("\\s+".toRegex(), limit = 2)
-                        val asPlayer = partsCmd.getOrNull(0)?.equals("true", ignoreCase = true) == true ||
-                            partsCmd.getOrNull(0)?.equals("player", ignoreCase = true) == true
-                        val cmd = if (asPlayer) partsCmd.getOrNull(1) else payload
-                        if (!cmd.isNullOrBlank()) {
-                            val rendered = renderRaw(cmd, model, player).replace("{player}", bukkitPlayer.name)
-                            if (asPlayer) plugin.server.dispatchCommand(bukkitPlayer, rendered)
-                            else plugin.server.dispatchCommand(plugin.server.consoleSender, rendered)
-                        }
-                    }
+                    schedulePerformCommandAction(::scheduleReward, delay, bukkitPlayer, model, player, payload)
                 }
                 "PERFORM_COMMAND_AS_PLAYER" -> {
                     scheduleReward(delay, bukkitPlayer.uniqueId) {
@@ -1286,6 +1224,70 @@ class BranchRuntimeManager(
         }.runTaskLater(plugin, delay)
         taskRef[0] = task
         trackRewardTask(playerId, task)
+    }
+
+    private fun scheduleTitleAction(
+        scheduler: (Long, UUID, () -> Unit) -> Unit,
+        delay: Long,
+        bukkitPlayer: org.bukkit.entity.Player,
+        model: QuestModel,
+        player: OfflinePlayer,
+        payload: String
+    ) {
+        scheduler(delay, bukkitPlayer.uniqueId) {
+            val partsTitle = payload.split("\\s+".toRegex(), limit = 5)
+            val fadeIn = partsTitle.getOrNull(0)?.toIntOrNull() ?: 10
+            val stay = partsTitle.getOrNull(1)?.toIntOrNull() ?: 60
+            val fadeOut = partsTitle.getOrNull(2)?.toIntOrNull() ?: 10
+            val rest = payload.substringAfter(partsTitle.take(3).joinToString(" "), "")
+            val titles = rest.split(",", limit = 2)
+            val titleText = MessageFormatter.format(renderRaw(titles.getOrNull(0) ?: "", model, player))
+            val subText = MessageFormatter.format(renderRaw(titles.getOrNull(1) ?: "", model, player))
+            bukkitPlayer.sendTitle(titleText, subText, fadeIn, stay, fadeOut)
+        }
+    }
+
+    private fun scheduleParticlesAction(
+        scheduler: (Long, UUID, () -> Unit) -> Unit,
+        delay: Long,
+        bukkitPlayer: org.bukkit.entity.Player,
+        payload: String
+    ) {
+        scheduler(delay, bukkitPlayer.uniqueId) {
+            val params = payload.split("\\s+".toRegex())
+            val questOnly = params.getOrNull(2)?.toBooleanStrictOrNull() ?: true
+            spawnParticles(bukkitPlayer, payload, allPlayers = !questOnly)
+        }
+    }
+
+    private fun scheduleGiveEffectAction(
+        scheduler: (Long, UUID, () -> Unit) -> Unit,
+        delay: Long,
+        bukkitPlayer: org.bukkit.entity.Player,
+        payload: String
+    ) {
+        scheduler(delay, bukkitPlayer.uniqueId) { giveEffect(bukkitPlayer, payload) }
+    }
+
+    private fun schedulePerformCommandAction(
+        scheduler: (Long, UUID, () -> Unit) -> Unit,
+        delay: Long,
+        bukkitPlayer: org.bukkit.entity.Player,
+        model: QuestModel,
+        player: OfflinePlayer,
+        payload: String
+    ) {
+        scheduler(delay, bukkitPlayer.uniqueId) {
+            val partsCmd = payload.split("\\s+".toRegex(), limit = 2)
+            val asPlayer = partsCmd.getOrNull(0)?.equals("true", ignoreCase = true) == true ||
+                partsCmd.getOrNull(0)?.equals("player", ignoreCase = true) == true
+            val cmd = if (asPlayer) partsCmd.getOrNull(1) else payload
+            if (!cmd.isNullOrBlank()) {
+                val rendered = renderRaw(cmd, model, player).replace("{player}", bukkitPlayer.name)
+                if (asPlayer) plugin.server.dispatchCommand(bukkitPlayer, rendered)
+                else plugin.server.dispatchCommand(plugin.server.consoleSender, rendered)
+            }
+        }
     }
 
     private fun sendPrompt(player: org.bukkit.entity.Player, message: String, token: String) {
