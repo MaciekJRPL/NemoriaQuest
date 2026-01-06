@@ -2258,15 +2258,67 @@ class BranchRuntimeManager(
             DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1708", "handlePlayerBlockEvent no session", mapOf("playerUuid" to player.uniqueId.toString()))
             return
         }
-        val model = questService.questInfo(session.questId) ?: return
-        val branch = model.branches[session.branchId] ?: return
-        val node = branch.objects[session.nodeId] ?: return
-        if (!isPlayerBlockNode(node.type)) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1712", "handlePlayerBlockEvent not block node", mapOf("questId" to model.id, "nodeId" to node.id, "nodeType" to node.type.name))
+        val ctx = resolveBlockContext(session) ?: return
+        val model = ctx.model
+        val node = ctx.node
+        if (!matchesBlockEventType(node.type, kind)) {
+            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1727", "handlePlayerBlockEvent type mismatch", mapOf("questId" to model.id, "nodeId" to node.id, "nodeType" to node.type.name, "kind" to kind.name))
+            return
+        }
+        if (!matchesBlockClickType(node, action)) {
+            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1736", "handlePlayerBlockEvent click not ok", mapOf("questId" to model.id, "nodeId" to node.id, "expectedClick" to (node.blockClickType ?: "RIGHT_CLICK"), "actualAction" to (action ?: "null")))
+            return
+        }
+        if (isPlayerBlockRestricted(node, placedByPlayer, player, model.id)) return
+
+        val locKey = block.locationKey()
+        val counted = session.blockCounted.getOrPut(node.id) { mutableSetOf() }
+        if (!node.blockAllowSameBlocks && counted.contains(locKey)) {
+            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1745", "handlePlayerBlockEvent same block not allowed", mapOf("questId" to model.id, "nodeId" to node.id, "locKey" to locKey))
+            node.blockAllowSameBlocksMessage?.let { MessageFormatter.send(player, it) }
             return
         }
 
-        val typeMatches = when (node.type) {
+        val goals = resolveBlockGoals(node)
+        val target = resolveBlockTarget(kind, block)
+        val progressed = updateBlockGoals(player, session, model, node, goals, target, kind, item, spawnerType, treeType)
+        if (progressed) counted.add(locKey)
+
+        val progMap = session.blockProgress[node.id] ?: return
+        val allDone = goals.all { g -> (progMap[g.id] ?: 0.0) >= g.goal }
+        if (allDone) {
+            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1810", "handlePlayerBlockEvent all done", mapOf("questId" to model.id, "nodeId" to node.id, "goalsCount" to goals.size))
+            questService.clearNodeProgress(player, model.id, session.branchId, node.id)
+            val gotoRaw = node.goto ?: return
+            val targetNode = normalizeTarget(gotoRaw)
+            runNode(player, model, session.branchId, targetNode, 0)
+        }
+    }
+
+    private data class BlockNodeContext(
+        val model: QuestModel,
+        val node: QuestObjectNode
+    )
+
+    private data class BlockTarget(
+        val block: Block,
+        val typeName: String,
+        val data: String
+    )
+
+    private fun resolveBlockContext(session: BranchSession): BlockNodeContext? {
+        val model = questService.questInfo(session.questId) ?: return null
+        val branch = model.branches[session.branchId] ?: return null
+        val node = branch.objects[session.nodeId] ?: return null
+        if (!isPlayerBlockNode(node.type)) {
+            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1712", "handlePlayerBlockEvent not block node", mapOf("questId" to model.id, "nodeId" to node.id, "nodeType" to node.type.name))
+            return null
+        }
+        return BlockNodeContext(model, node)
+    }
+
+    private fun matchesBlockEventType(type: QuestObjectNodeType, kind: BlockEventType): Boolean =
+        when (type) {
             QuestObjectNodeType.PLAYER_BLOCKS_BREAK -> kind == BlockEventType.BREAK
             QuestObjectNodeType.PLAYER_BLOCKS_PLACE -> kind == BlockEventType.PLACE
             QuestObjectNodeType.PLAYER_BLOCKS_INTERACT -> kind == BlockEventType.INTERACT
@@ -2279,38 +2331,32 @@ class BranchRuntimeManager(
             QuestObjectNodeType.PLAYER_TREE_GROW -> kind == BlockEventType.TREE_GROW
             else -> true
         }
-        if (!typeMatches) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1727", "handlePlayerBlockEvent type mismatch", mapOf("questId" to model.id, "nodeId" to node.id, "nodeType" to node.type.name, "kind" to kind.name))
-            return
-        }
 
-        val clickOk = when (node.type) {
+    private fun matchesBlockClickType(node: QuestObjectNode, action: String?): Boolean =
+        when (node.type) {
             QuestObjectNodeType.PLAYER_BLOCKS_INTERACT -> matchesClick(node.blockClickType, action)
             QuestObjectNodeType.PLAYER_BLOCKS_STRIP,
             QuestObjectNodeType.PLAYER_BLOCK_FARM,
             QuestObjectNodeType.PLAYER_MAKE_PATHS -> matchesClick("RIGHT_CLICK", action)
             else -> true
         }
-        if (!clickOk) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1736", "handlePlayerBlockEvent click not ok", mapOf("questId" to model.id, "nodeId" to node.id, "expectedClick" to (node.blockClickType ?: "RIGHT_CLICK"), "actualAction" to (action ?: "null")))
-            return
-        }
 
+    private fun isPlayerBlockRestricted(
+        node: QuestObjectNode,
+        placedByPlayer: Boolean,
+        player: org.bukkit.entity.Player,
+        questId: String
+    ): Boolean {
         if (!node.blockAllowPlayerBlocks && placedByPlayer) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1738", "handlePlayerBlockEvent player blocks not allowed", mapOf("questId" to model.id, "nodeId" to node.id))
+            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1738", "handlePlayerBlockEvent player blocks not allowed", mapOf("questId" to questId, "nodeId" to node.id))
             node.blockAllowPlayerBlocksMessage?.let { MessageFormatter.send(player, it) }
-            return
+            return true
         }
+        return false
+    }
 
-        val locKey = block.locationKey()
-        val counted = session.blockCounted.getOrPut(node.id) { mutableSetOf() }
-        if (!node.blockAllowSameBlocks && counted.contains(locKey)) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1745", "handlePlayerBlockEvent same block not allowed", mapOf("questId" to model.id, "nodeId" to node.id, "locKey" to locKey))
-            node.blockAllowSameBlocksMessage?.let { MessageFormatter.send(player, it) }
-            return
-        }
-
-        val goals = node.blockGoals.ifEmpty {
+    private fun resolveBlockGoals(node: QuestObjectNode): List<BlockGoal> =
+        node.blockGoals.ifEmpty {
             listOf(
                 BlockGoal(
                     id = "default",
@@ -2322,56 +2368,32 @@ class BranchRuntimeManager(
             )
         }
 
+    private fun resolveBlockTarget(kind: BlockEventType, block: Block): BlockTarget {
         val targetBlock = if (kind == BlockEventType.IGNITE && block.type == Material.AIR && block.y > block.world.minHeight) {
             block.world.getBlockAt(block.x, block.y - 1, block.z)
         } else block
-        val blockType = targetBlock.type.name
-        val blockData = targetBlock.blockData.asString.lowercase()
+        return BlockTarget(
+            targetBlock,
+            targetBlock.type.name,
+            targetBlock.blockData.asString.lowercase()
+        )
+    }
+
+    private fun updateBlockGoals(
+        player: org.bukkit.entity.Player,
+        session: BranchSession,
+        model: QuestModel,
+        node: QuestObjectNode,
+        goals: List<BlockGoal>,
+        target: BlockTarget,
+        kind: BlockEventType,
+        item: ItemStack?,
+        spawnerType: String?,
+        treeType: String?
+    ): Boolean {
         var progressed = false
         goals.forEach { goal ->
-            if (goal.types.isNotEmpty()) {
-                val matchType = goal.types.any { it.equals(blockType, true) }
-                if (!matchType) {
-                    DebugLog.log("BLOCK_SKIP type mismatch block=$blockType goalTypes=${goal.types} node=${node.id}")
-                    return@forEach
-                }
-            }
-            if (goal.states.isNotEmpty()) {
-                val matchedStates = goal.states.count { st -> blockData.contains(st.lowercase()) }
-                val required = if (goal.statesRequiredCount == Int.MAX_VALUE) goal.states.size else goal.statesRequiredCount
-                if (matchedStates < required) {
-                    DebugLog.log("BLOCK_SKIP state mismatch blockData=$blockData goalStates=${goal.states} node=${node.id}")
-                    return@forEach
-                }
-            }
-            if (node.type == QuestObjectNodeType.PLAYER_SPAWNER_PLACE && node.blockSpawnTypes.isNotEmpty()) {
-                val sp = spawnerType?.uppercase()
-                if (sp == null || node.blockSpawnTypes.none { it.equals(sp, true) }) return@forEach
-            }
-            if (node.type == QuestObjectNodeType.PLAYER_TREE_GROW && node.blockTreeType != null) {
-                val tree = normalizeTreeType(treeType)
-                if (tree == null || !node.blockTreeType.equals(tree, true)) return@forEach
-            }
-            if (node.type == QuestObjectNodeType.PLAYER_BLOCK_FARM && item != null) {
-                val matName = item.type.name
-                if (!matName.endsWith("_HOE")) return@forEach
-            }
-            if (node.type == QuestObjectNodeType.PLAYER_BLOCKS_STRIP && item != null) {
-                val matName = item.type.name
-                if (!matName.endsWith("_AXE")) return@forEach
-            }
-            if (node.type == QuestObjectNodeType.PLAYER_MAKE_PATHS && item != null) {
-                val matName = item.type.name
-                if (!matName.endsWith("_SHOVEL") && !matName.endsWith("_SPADE")) return@forEach
-            }
-            if (node.type == QuestObjectNodeType.PLAYER_BLOCK_FROST_WALK && kind != BlockEventType.FROST_WALK) return@forEach
-            if (node.type == QuestObjectNodeType.PLAYER_BLOCK_FARM && goal.types.isEmpty()) {
-                if (!isFarmable(blockType)) return@forEach
-            }
-            if (node.type == QuestObjectNodeType.PLAYER_MAKE_PATHS && goal.types.isEmpty()) {
-                if (!isPathable(blockType)) return@forEach
-            }
-
+            if (!matchesBlockGoal(goal, target, node, kind, item, spawnerType, treeType)) return@forEach
             val progMap = session.blockProgress.getOrPut(node.id) { mutableMapOf() }
             val current = progMap.getOrDefault(goal.id, 0.0)
             val updated = current + 1.0
@@ -2380,20 +2402,61 @@ class BranchRuntimeManager(
             DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1800", "handlePlayerBlockEvent progress", mapOf("questId" to model.id, "nodeId" to node.id, "goalId" to goal.id, "current" to current, "updated" to updated, "goal" to goal.goal))
             progressed = true
         }
+        return progressed
+    }
 
-        if (progressed) {
-            counted.add(locKey)
+    private fun matchesBlockGoal(
+        goal: BlockGoal,
+        target: BlockTarget,
+        node: QuestObjectNode,
+        kind: BlockEventType,
+        item: ItemStack?,
+        spawnerType: String?,
+        treeType: String?
+    ): Boolean {
+        if (goal.types.isNotEmpty()) {
+            val matchType = goal.types.any { it.equals(target.typeName, true) }
+            if (!matchType) {
+                DebugLog.log("BLOCK_SKIP type mismatch block=${target.typeName} goalTypes=${goal.types} node=${node.id}")
+                return false
+            }
         }
-
-        val progMap = session.blockProgress[node.id] ?: return
-        val allDone = goals.all { g -> (progMap[g.id] ?: 0.0) >= g.goal }
-        if (allDone) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1810", "handlePlayerBlockEvent all done", mapOf("questId" to model.id, "nodeId" to node.id, "goalsCount" to goals.size))
-            questService.clearNodeProgress(player, model.id, session.branchId, node.id)
-            val gotoRaw = node.goto ?: return
-            val target = normalizeTarget(gotoRaw)
-            runNode(player, model, session.branchId, target, 0)
+        if (goal.states.isNotEmpty()) {
+            val matchedStates = goal.states.count { st -> target.data.contains(st.lowercase()) }
+            val required = if (goal.statesRequiredCount == Int.MAX_VALUE) goal.states.size else goal.statesRequiredCount
+            if (matchedStates < required) {
+                DebugLog.log("BLOCK_SKIP state mismatch blockData=${target.data} goalStates=${goal.states} node=${node.id}")
+                return false
+            }
         }
+        if (node.type == QuestObjectNodeType.PLAYER_SPAWNER_PLACE && node.blockSpawnTypes.isNotEmpty()) {
+            val sp = spawnerType?.uppercase()
+            if (sp == null || node.blockSpawnTypes.none { it.equals(sp, true) }) return false
+        }
+        if (node.type == QuestObjectNodeType.PLAYER_TREE_GROW && node.blockTreeType != null) {
+            val tree = normalizeTreeType(treeType)
+            if (tree == null || !node.blockTreeType.equals(tree, true)) return false
+        }
+        if (node.type == QuestObjectNodeType.PLAYER_BLOCK_FARM && item != null) {
+            val matName = item.type.name
+            if (!matName.endsWith("_HOE")) return false
+        }
+        if (node.type == QuestObjectNodeType.PLAYER_BLOCKS_STRIP && item != null) {
+            val matName = item.type.name
+            if (!matName.endsWith("_AXE")) return false
+        }
+        if (node.type == QuestObjectNodeType.PLAYER_MAKE_PATHS && item != null) {
+            val matName = item.type.name
+            if (!matName.endsWith("_SHOVEL") && !matName.endsWith("_SPADE")) return false
+        }
+        if (node.type == QuestObjectNodeType.PLAYER_BLOCK_FROST_WALK && kind != BlockEventType.FROST_WALK) return false
+        if (node.type == QuestObjectNodeType.PLAYER_BLOCK_FARM && goal.types.isEmpty()) {
+            if (!isFarmable(target.typeName)) return false
+        }
+        if (node.type == QuestObjectNodeType.PLAYER_MAKE_PATHS && goal.types.isEmpty()) {
+            if (!isPathable(target.typeName)) return false
+        }
+        return true
     }
 
     private fun matchesClick(expected: String?, action: String?): Boolean {
@@ -2443,77 +2506,133 @@ class BranchRuntimeManager(
             DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1876", "handlePlayerEntityEvent no session", mapOf("playerUuid" to player.uniqueId.toString()))
             return
         }
-        val model = questService.questInfo(session.questId) ?: return
-        val branch = model.branches[session.branchId] ?: return
-        val node = branch.objects[session.nodeId] ?: return
-        if (!isPlayerEntityNode(node.type)) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1882", "handlePlayerEntityEvent not entity node", mapOf("questId" to model.id, "nodeId" to node.id, "nodeType" to node.type.name))
-            return
+        val ctx = resolveEntityContext(session) ?: return
+        val model = ctx.model
+        val node = ctx.node
+        val counted = session.entityCounted.getOrPut(node.id) { mutableSetOf() }
+        val target = resolveEntityTarget(kind, entity, damager, entityTypeHint)
+        if (shouldRejectSameEntity(node, counted, target.entityId, player, model.id)) return
+        if (!passesDeathNearby(player, node, entity, model.id)) return
+
+        val goals = resolveEntityGoals(node)
+        if (node.type == QuestObjectNodeType.PLAYER_TURTLES_BREED) {
+            net.nemoria.quest.core.DebugLog.log(
+                "TURTLE_BREED_CHECK player=${player.name} kind=$kind targetType=${target.typeName} goals=${goals.map { it.id + ':' + it.goal }}"
+            )
         }
 
-        val counted = session.entityCounted.getOrPut(node.id) { mutableSetOf() }
+        val progressed = updateEntityGoals(player, session, model, node, goals, kind, target)
+        if (node.type == QuestObjectNodeType.PLAYER_TURTLES_BREED && !progressed) {
+            net.nemoria.quest.core.DebugLog.log(
+                "TURTLE_BREED_NO_PROGRESS player=${player.name} kind=$kind targetType=${target.typeName} counted=${counted.size}"
+            )
+            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1946", "handlePlayerEntityEvent TURTLE_BREED no progress", mapOf("questId" to model.id, "nodeId" to node.id, "kind" to kind.name, "targetType" to (target.typeName ?: "null"), "countedSize" to counted.size))
+        }
+
+        if (progressed && target.entityId != null) counted.add(target.entityId)
+
+        val progMap = session.entityProgress[node.id] ?: return
+        val allDone = goals.all { g -> (progMap[g.id.ifBlank { "default" }] ?: 0.0) >= g.goal }
+        if (allDone) {
+            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1956", "handlePlayerEntityEvent all done", mapOf("questId" to model.id, "nodeId" to node.id, "goalsCount" to goals.size))
+            questService.clearNodeProgress(player, model.id, session.branchId, node.id)
+            val gotoRaw = node.goto ?: return
+            val targetNode = normalizeTarget(gotoRaw)
+            runNode(player, model, session.branchId, targetNode, 0)
+        }
+    }
+
+    private data class EntityNodeContext(
+        val model: QuestModel,
+        val node: QuestObjectNode
+    )
+
+    private data class EntityTarget(
+        val entity: org.bukkit.entity.Entity?,
+        val typeName: String?,
+        val entityId: UUID?
+    )
+
+    private fun resolveEntityContext(session: BranchSession): EntityNodeContext? {
+        val model = questService.questInfo(session.questId) ?: return null
+        val branch = model.branches[session.branchId] ?: return null
+        val node = branch.objects[session.nodeId] ?: return null
+        if (!isPlayerEntityNode(node.type)) {
+            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1882", "handlePlayerEntityEvent not entity node", mapOf("questId" to model.id, "nodeId" to node.id, "nodeType" to node.type.name))
+            return null
+        }
+        return EntityNodeContext(model, node)
+    }
+
+    private fun resolveEntityTarget(
+        kind: EntityEventType,
+        entity: org.bukkit.entity.Entity?,
+        damager: org.bukkit.entity.Entity?,
+        entityTypeHint: String?
+    ): EntityTarget {
         val targetEntity = when (kind) {
             EntityEventType.GET_DAMAGED -> damager ?: entity
             else -> entity
         }
         val targetType = targetEntity?.type?.name ?: entityTypeHint
         val entityId = targetEntity?.uniqueId
+        return EntityTarget(targetEntity, targetType, entityId)
+    }
+
+    private fun shouldRejectSameEntity(
+        node: QuestObjectNode,
+        counted: MutableSet<UUID>,
+        entityId: UUID?,
+        player: org.bukkit.entity.Player,
+        questId: String
+    ): Boolean {
         if (!node.entityAllowSame && entityId != null && counted.contains(entityId)) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1894", "handlePlayerEntityEvent same entity not allowed", mapOf("questId" to model.id, "nodeId" to node.id, "entityId" to entityId.toString()))
+            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1894", "handlePlayerEntityEvent same entity not allowed", mapOf("questId" to questId, "nodeId" to node.id, "entityId" to entityId.toString()))
             node.entityAllowSameMessage?.let { MessageFormatter.send(player, it) }
-            return
+            return true
         }
+        return false
+    }
 
-        if (node.type == QuestObjectNodeType.PLAYER_ENTITIES_DEATH_NEARBY) {
-            val maxDist = node.entityMaxDistance ?: return
-            val entityLoc = entity?.location
-            if (entityLoc == null) {
-                DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1900", "handlePlayerEntityEvent DEATH_NEARBY no entity", mapOf("questId" to model.id, "nodeId" to node.id))
-                return
-            }
-            val distSq = player.location.distanceSquared(entityLoc)
-            val maxDistSq = maxDist * maxDist
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1905", "handlePlayerEntityEvent DEATH_NEARBY distance check", mapOf("questId" to model.id, "nodeId" to node.id, "distSq" to distSq, "maxDistSq" to maxDistSq, "inRange" to (distSq <= maxDistSq)))
-            if (distSq > maxDistSq) return
+    private fun passesDeathNearby(
+        player: org.bukkit.entity.Player,
+        node: QuestObjectNode,
+        entity: org.bukkit.entity.Entity?,
+        questId: String
+    ): Boolean {
+        if (node.type != QuestObjectNodeType.PLAYER_ENTITIES_DEATH_NEARBY) return true
+        val maxDist = node.entityMaxDistance ?: return false
+        val entityLoc = entity?.location
+        if (entityLoc == null) {
+            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1900", "handlePlayerEntityEvent DEATH_NEARBY no entity", mapOf("questId" to questId, "nodeId" to node.id))
+            return false
         }
+        val distSq = player.location.distanceSquared(entityLoc)
+        val maxDistSq = maxDist * maxDist
+        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1905", "handlePlayerEntityEvent DEATH_NEARBY distance check", mapOf("questId" to questId, "nodeId" to node.id, "distSq" to distSq, "maxDistSq" to maxDistSq, "inRange" to (distSq <= maxDistSq)))
+        return distSq <= maxDistSq
+    }
 
-        val goals = node.goals.ifEmpty {
+    private fun resolveEntityGoals(node: QuestObjectNode): List<EntityGoal> =
+        node.goals.ifEmpty {
             listOf(EntityGoal(goal = node.count.toDouble().coerceAtLeast(1.0), id = "default"))
         }
 
-        if (node.type == QuestObjectNodeType.PLAYER_TURTLES_BREED) {
-            net.nemoria.quest.core.DebugLog.log(
-                "TURTLE_BREED_CHECK player=${player.name} kind=$kind targetType=$targetType goals=${goals.map { it.id + ':' + it.goal }}"
-            )
-        }
-
+    private fun updateEntityGoals(
+        player: org.bukkit.entity.Player,
+        session: BranchSession,
+        model: QuestModel,
+        node: QuestObjectNode,
+        goals: List<EntityGoal>,
+        kind: EntityEventType,
+        target: EntityTarget
+    ): Boolean {
         var progressed = false
+        val kindAllowed = isEntityKindAllowed(node.type, kind)
         goals.forEach { goal ->
             val goalId = goal.id.ifBlank { "default" }
-            if (goal.types.isNotEmpty() || goal.names.isNotEmpty() || goal.colors.isNotEmpty() || goal.horseColors.isNotEmpty() || goal.horseStyles.isNotEmpty()) {
-                val match = when {
-                    targetEntity != null -> matchEntity(targetEntity, goal)
-                    targetType != null -> goal.types.any { it.equals(targetType, true) }
-                    else -> false
-                }
-                if (!match) return@forEach
-            }
-            when (node.type) {
-                QuestObjectNodeType.PLAYER_ENTITIES_KILL -> if (kind != EntityEventType.KILL) return@forEach
-                QuestObjectNodeType.PLAYER_ENTITIES_DAMAGE -> if (kind != EntityEventType.DAMAGE) return@forEach
-                QuestObjectNodeType.PLAYER_ENTITIES_GET_DAMAGED -> if (kind != EntityEventType.GET_DAMAGED) return@forEach
-                QuestObjectNodeType.PLAYER_ENTITIES_INTERACT -> if (kind != EntityEventType.INTERACT) return@forEach
-                QuestObjectNodeType.PLAYER_ENTITIES_CATCH -> if (kind != EntityEventType.CATCH) return@forEach
-                QuestObjectNodeType.PLAYER_ENTITIES_MOUNT -> if (kind != EntityEventType.MOUNT) return@forEach
-                QuestObjectNodeType.PLAYER_ENTITIES_DISMOUNT -> if (kind != EntityEventType.DISMOUNT) return@forEach
-                QuestObjectNodeType.PLAYER_ENTITIES_SHEAR -> if (kind != EntityEventType.SHEAR) return@forEach
-                QuestObjectNodeType.PLAYER_ENTITIES_SPAWN -> if (kind != EntityEventType.SPAWN) return@forEach
-                QuestObjectNodeType.PLAYER_ENTITIES_TAME -> if (kind != EntityEventType.TAME) return@forEach
-                QuestObjectNodeType.PLAYER_ENTITIES_BREED -> if (kind != EntityEventType.BREED) return@forEach
-                QuestObjectNodeType.PLAYER_TURTLES_BREED -> if (kind != EntityEventType.TURTLE_BREED) return@forEach
-                QuestObjectNodeType.PLAYER_ENTITIES_DEATH_NEARBY -> if (kind != EntityEventType.DEATH_NEARBY) return@forEach
-                else -> {}
-            }
+            if (!matchesEntityGoal(goal, target)) return@forEach
+            if (!kindAllowed) return@forEach
             val progMap = session.entityProgress.getOrPut(node.id) { mutableMapOf() }
             val current = progMap.getOrDefault(goalId, 0.0)
             val updated = current + 1.0
@@ -2522,26 +2641,37 @@ class BranchRuntimeManager(
             DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1942", "handlePlayerEntityEvent progress", mapOf("questId" to model.id, "nodeId" to node.id, "goalId" to goalId, "current" to current, "updated" to updated, "goal" to goal.goal))
             progressed = true
         }
-
-        if (node.type == QuestObjectNodeType.PLAYER_TURTLES_BREED && !progressed) {
-            net.nemoria.quest.core.DebugLog.log(
-                "TURTLE_BREED_NO_PROGRESS player=${player.name} kind=$kind targetType=$targetType counted=${counted.size}"
-            )
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1946", "handlePlayerEntityEvent TURTLE_BREED no progress", mapOf("questId" to model.id, "nodeId" to node.id, "kind" to kind.name, "targetType" to (targetType ?: "null"), "countedSize" to counted.size))
-        }
-
-        if (progressed && entityId != null) counted.add(entityId)
-
-        val progMap = session.entityProgress[node.id] ?: return
-        val allDone = goals.all { g -> (progMap[g.id.ifBlank { "default" }] ?: 0.0) >= g.goal }
-        if (allDone) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1956", "handlePlayerEntityEvent all done", mapOf("questId" to model.id, "nodeId" to node.id, "goalsCount" to goals.size))
-            questService.clearNodeProgress(player, model.id, session.branchId, node.id)
-            val gotoRaw = node.goto ?: return
-            val target = normalizeTarget(gotoRaw)
-            runNode(player, model, session.branchId, target, 0)
-        }
+        return progressed
     }
+
+    private fun matchesEntityGoal(goal: EntityGoal, target: EntityTarget): Boolean {
+        if (goal.types.isNotEmpty() || goal.names.isNotEmpty() || goal.colors.isNotEmpty() || goal.horseColors.isNotEmpty() || goal.horseStyles.isNotEmpty()) {
+            return when {
+                target.entity != null -> matchEntity(target.entity, goal)
+                target.typeName != null -> goal.types.any { it.equals(target.typeName, true) }
+                else -> false
+            }
+        }
+        return true
+    }
+
+    private fun isEntityKindAllowed(nodeType: QuestObjectNodeType, kind: EntityEventType): Boolean =
+        when (nodeType) {
+            QuestObjectNodeType.PLAYER_ENTITIES_KILL -> kind == EntityEventType.KILL
+            QuestObjectNodeType.PLAYER_ENTITIES_DAMAGE -> kind == EntityEventType.DAMAGE
+            QuestObjectNodeType.PLAYER_ENTITIES_GET_DAMAGED -> kind == EntityEventType.GET_DAMAGED
+            QuestObjectNodeType.PLAYER_ENTITIES_INTERACT -> kind == EntityEventType.INTERACT
+            QuestObjectNodeType.PLAYER_ENTITIES_CATCH -> kind == EntityEventType.CATCH
+            QuestObjectNodeType.PLAYER_ENTITIES_MOUNT -> kind == EntityEventType.MOUNT
+            QuestObjectNodeType.PLAYER_ENTITIES_DISMOUNT -> kind == EntityEventType.DISMOUNT
+            QuestObjectNodeType.PLAYER_ENTITIES_SHEAR -> kind == EntityEventType.SHEAR
+            QuestObjectNodeType.PLAYER_ENTITIES_SPAWN -> kind == EntityEventType.SPAWN
+            QuestObjectNodeType.PLAYER_ENTITIES_TAME -> kind == EntityEventType.TAME
+            QuestObjectNodeType.PLAYER_ENTITIES_BREED -> kind == EntityEventType.BREED
+            QuestObjectNodeType.PLAYER_TURTLES_BREED -> kind == EntityEventType.TURTLE_BREED
+            QuestObjectNodeType.PLAYER_ENTITIES_DEATH_NEARBY -> kind == EntityEventType.DEATH_NEARBY
+            else -> true
+        }
 
     private fun isPlayerEntityNode(type: QuestObjectNodeType): Boolean = type.isPlayerEntityNode()
 
@@ -2551,22 +2681,55 @@ class BranchRuntimeManager(
         delta: Double = 0.0,
         vehicleType: String? = null
     ) {
-        val session = sessions[player.uniqueId]
-        if (session == null) {
+        val session = sessions[player.uniqueId] ?: return
+        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1982", "handleMovementEvent entry", mapOf("playerUuid" to player.uniqueId.toString(), "kind" to kind.name, "delta" to delta, "vehicleType" to (vehicleType ?: "null"), "questId" to session.questId, "branchId" to session.branchId))
+        val ctx = resolveMovementContext(session) ?: return
+        val model = ctx.model
+        val node = ctx.node
+        val goal = computeMovementGoal(node)
+        val matches = matchesMovementType(node, kind, vehicleType)
+        if (!matches) return
+        if (node.type == QuestObjectNodeType.PLAYER_POSITION) {
+            handleMovementPosition(player, model, session, node)
             return
         }
-        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1982", "handleMovementEvent entry", mapOf("playerUuid" to player.uniqueId.toString(), "kind" to kind.name, "delta" to delta, "vehicleType" to (vehicleType ?: "null"), "questId" to session.questId, "branchId" to session.branchId))
-        val model = questService.questInfo(session.questId) ?: return
-        val branch = model.branches[session.branchId] ?: return
-        val node = branch.objects[session.nodeId] ?: return
+        val add = computeMovementAdd(node, delta)
+        val current = session.movementProgress.getOrDefault(node.id, 0.0)
+        val updated = current + add
+        session.movementProgress[node.id] = updated
+        questService.saveNodeProgress(player, model.id, session.branchId, node.id, updated)
+        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2057", "handleMovementEvent progress", mapOf("questId" to model.id, "nodeId" to node.id, "current" to current, "add" to add, "updated" to updated, "goal" to goal))
+        if (updated >= goal) {
+            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2059", "handleMovementEvent goal reached", mapOf("questId" to model.id, "nodeId" to node.id, "updated" to updated, "goal" to goal))
+            completeMovementNode(player, model, session, node)
+        }
+    }
+
+    private data class MovementNodeContext(
+        val model: QuestModel,
+        val node: QuestObjectNode
+    )
+
+    private fun resolveMovementContext(session: BranchSession): MovementNodeContext? {
+        val model = questService.questInfo(session.questId) ?: return null
+        val branch = model.branches[session.branchId] ?: return null
+        val node = branch.objects[session.nodeId] ?: return null
         if (!isMovementNode(node.type)) {
             DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:1992", "handleMovementEvent not movement node", mapOf("questId" to model.id, "nodeId" to node.id, "nodeType" to node.type.name))
-            return
+            return null
         }
+        return MovementNodeContext(model, node)
+    }
 
-        val goal = node.distanceGoal ?: node.count.toDouble().coerceAtLeast(1.0)
+    private fun computeMovementGoal(node: QuestObjectNode): Double =
+        node.distanceGoal ?: node.count.toDouble().coerceAtLeast(1.0)
 
-        val matches = when (node.type) {
+    private fun matchesMovementType(
+        node: QuestObjectNode,
+        kind: MovementEventType,
+        vehicleType: String?
+    ): Boolean {
+        return when (node.type) {
             QuestObjectNodeType.PLAYER_MOVE -> kind == MovementEventType.MOVE
             QuestObjectNodeType.PLAYER_MOVE_BY_FOOT_DISTANCE -> kind == MovementEventType.FOOT
             QuestObjectNodeType.PLAYER_WALK_DISTANCE -> kind == MovementEventType.WALK
@@ -2575,7 +2738,7 @@ class BranchRuntimeManager(
             QuestObjectNodeType.PLAYER_ELYTRA_FLY_DISTANCE -> kind == MovementEventType.GLIDE
             QuestObjectNodeType.PLAYER_FALL_DISTANCE -> kind == MovementEventType.FALL
             QuestObjectNodeType.PLAYER_VEHICLE_DISTANCE -> {
-                if (vehicleType != null && node.vehicleType != null && !node.vehicleType.equals(vehicleType, true)) return
+                if (vehicleType != null && node.vehicleType != null && !node.vehicleType.equals(vehicleType, true)) return false
                 kind == MovementEventType.VEHICLE
             }
             QuestObjectNodeType.PLAYER_HORSE_JUMP -> kind == MovementEventType.HORSE_JUMP
@@ -2584,61 +2747,64 @@ class BranchRuntimeManager(
             QuestObjectNodeType.PLAYER_POSITION -> true
             else -> false
         }
-        if (!matches) return
+    }
 
-        if (node.type == QuestObjectNodeType.PLAYER_POSITION) {
-            val target = node.position ?: return
-            val playerLoc = player.location
-            val targetWorld = target.world?.let { plugin.server.getWorld(it) } ?: playerLoc.world
-            if (target.world != null && targetWorld == null) return
-            if (playerLoc.world != targetWorld) return
-            val targetLoc = org.bukkit.Location(targetWorld, target.x ?: playerLoc.x, target.y ?: playerLoc.y, target.z ?: playerLoc.z)
-            val distSq = playerLoc.distanceSquared(targetLoc)
-            val radiusSq = target.radius * target.radius
-            val dist = sqrt(distSq)
-            DebugLog.log(
-                "POS_CHECK player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} " +
-                    "playerLoc=${playerLoc.world?.name}:${"%.2f".format(playerLoc.x)},${"%.2f".format(playerLoc.y)},${"%.2f".format(playerLoc.z)} " +
-                    "targetLoc=${targetLoc.world?.name}:${"%.2f".format(targetLoc.x)},${"%.2f".format(targetLoc.y)},${"%.2f".format(targetLoc.z)} " +
-                    "dist=${"%.2f".format(dist)} radius=${"%.2f".format(target.radius)}"
-            )
-            if (node.positionDisplayDistance) {
-                val now = System.currentTimeMillis()
-                val last = session.positionActionbarHint[node.id] ?: 0L
-                if (now - last >= 1000L) { // co ok. 20 ticków
-                    val remaining = (dist - target.radius).coerceAtLeast(0.0)
-                    player.sendActionBar(Component.text("Odległość: %.1fm".format(remaining)))
-                    session.positionActionbarHint[node.id] = now
-                }
+    private fun handleMovementPosition(
+        player: org.bukkit.entity.Player,
+        model: QuestModel,
+        session: BranchSession,
+        node: QuestObjectNode
+    ) {
+        val target = node.position ?: return
+        val playerLoc = player.location
+        val targetWorld = target.world?.let { plugin.server.getWorld(it) } ?: playerLoc.world
+        if (target.world != null && targetWorld == null) return
+        if (playerLoc.world != targetWorld) return
+        val targetLoc = org.bukkit.Location(targetWorld, target.x ?: playerLoc.x, target.y ?: playerLoc.y, target.z ?: playerLoc.z)
+        val distSq = playerLoc.distanceSquared(targetLoc)
+        val radiusSq = target.radius * target.radius
+        val dist = sqrt(distSq)
+        DebugLog.log(
+            "POS_CHECK player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} " +
+                "playerLoc=${playerLoc.world?.name}:${"%.2f".format(playerLoc.x)},${"%.2f".format(playerLoc.y)},${"%.2f".format(playerLoc.z)} " +
+                "targetLoc=${targetLoc.world?.name}:${"%.2f".format(targetLoc.x)},${"%.2f".format(targetLoc.y)},${"%.2f".format(targetLoc.z)} " +
+                "dist=${"%.2f".format(dist)} radius=${"%.2f".format(target.radius)}"
+        )
+        if (node.positionDisplayDistance) {
+            val now = System.currentTimeMillis()
+            val last = session.positionActionbarHint[node.id] ?: 0L
+            if (now - last >= 1000L) { // co ok. 20 ticków
+                val remaining = (dist - target.radius).coerceAtLeast(0.0)
+                player.sendActionBar(Component.text("Odległość: %.1fm".format(remaining)))
+                session.positionActionbarHint[node.id] = now
             }
-            if (distSq <= radiusSq) {
-                questService.clearNodeProgress(player, model.id, session.branchId, node.id)
-                val gotoRaw = node.goto ?: return
-                runNode(player, model, session.branchId, normalizeTarget(gotoRaw), 0)
-            }
-            return
         }
+        if (distSq <= radiusSq) {
+            questService.clearNodeProgress(player, model.id, session.branchId, node.id)
+            val gotoRaw = node.goto ?: return
+            runNode(player, model, session.branchId, normalizeTarget(gotoRaw), 0)
+        }
+    }
 
-        val add = if (node.type in listOf(
+    private fun computeMovementAdd(node: QuestObjectNode, delta: Double): Double =
+        if (
+            node.type in listOf(
                 QuestObjectNodeType.PLAYER_HORSE_JUMP,
                 QuestObjectNodeType.PLAYER_JUMP,
                 QuestObjectNodeType.PLAYER_ELYTRA_LAND
             )
         ) 1.0 else delta
 
-        val current = session.movementProgress.getOrDefault(node.id, 0.0)
-        val updated = current + add
-        session.movementProgress[node.id] = updated
-        questService.saveNodeProgress(player, model.id, session.branchId, node.id, updated)
-        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2057", "handleMovementEvent progress", mapOf("questId" to model.id, "nodeId" to node.id, "current" to current, "add" to add, "updated" to updated, "goal" to goal))
-        if (updated >= goal) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2059", "handleMovementEvent goal reached", mapOf("questId" to model.id, "nodeId" to node.id, "updated" to updated, "goal" to goal))
-            val gotoRaw = node.goto ?: return
-            questService.clearNodeProgress(player, model.id, session.branchId, node.id)
-            runNode(player, model, session.branchId, normalizeTarget(gotoRaw), 0)
-        }
+    private fun completeMovementNode(
+        player: org.bukkit.entity.Player,
+        model: QuestModel,
+        session: BranchSession,
+        node: QuestObjectNode
+    ) {
+        val gotoRaw = node.goto ?: return
+        questService.clearNodeProgress(player, model.id, session.branchId, node.id)
+        runNode(player, model, session.branchId, normalizeTarget(gotoRaw), 0)
     }
-
     private fun isMovementNode(type: QuestObjectNodeType): Boolean =
         when (type) {
             QuestObjectNodeType.PLAYER_MOVE,
@@ -2663,19 +2829,52 @@ class BranchRuntimeManager(
         detail: String? = null
     ) {
         DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2083", "handlePhysicalEvent entry", mapOf("playerUuid" to player.uniqueId.toString(), "kind" to kind.name, "amount" to amount, "detail" to (detail ?: "null")))
+        val ctx = resolvePhysicalContext(player) ?: return
+        val session = ctx.session
+        val model = ctx.model
+        val node = ctx.node
+        val typeMatches = matchesPhysicalType(node.type, kind)
+        if (shouldSkipPhysicalType(node, kind, typeMatches, player, model, session, detail)) return
+        val vehicleDetail = resolveVehicleDetail(node, detail)
+        if (!passesPhysicalFilters(node, detail, vehicleDetail)) return
+        logPhysicalEvent(node, player, model, session, kind, amount, detail, vehicleDetail)
+        val goal = computePhysicalGoal(node)
+        val add = computePhysicalAdd(node, amount)
+        val current = session.physicalProgress.getOrDefault(node.id, 0.0)
+        val updated = current + add
+        session.physicalProgress[node.id] = updated
+        questService.saveNodeProgress(player, model.id, session.branchId, node.id, updated)
+        val targetReached = updated >= goal
+        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2170", "handlePhysicalEvent progress", mapOf("questId" to model.id, "nodeId" to node.id, "current" to current, "add" to add, "updated" to updated, "goal" to goal, "targetReached" to targetReached))
+        if (targetReached) {
+            completePhysicalNode(player, model, session, node)
+        }
+    }
+
+    private data class PhysicalNodeContext(
+        val session: BranchSession,
+        val model: QuestModel,
+        val node: QuestObjectNode
+    )
+
+    private fun resolvePhysicalContext(player: org.bukkit.entity.Player): PhysicalNodeContext? {
         val session = sessions[player.uniqueId]
         if (session == null) {
             DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2089", "handlePhysicalEvent no session", mapOf("playerUuid" to player.uniqueId.toString()))
-            return
+            return null
         }
-        val model = questService.questInfo(session.questId) ?: return
-        val branch = model.branches[session.branchId] ?: return
-        val node = branch.objects[session.nodeId] ?: return
+        val model = questService.questInfo(session.questId) ?: return null
+        val branch = model.branches[session.branchId] ?: return null
+        val node = branch.objects[session.nodeId] ?: return null
         if (!isPhysicalNode(node.type)) {
             DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2093", "handlePhysicalEvent not physical node", mapOf("questId" to model.id, "nodeId" to node.id, "nodeType" to node.type.name))
-            return
+            return null
         }
-        val typeMatches = when (node.type) {
+        return PhysicalNodeContext(session, model, node)
+    }
+
+    private fun matchesPhysicalType(type: QuestObjectNodeType, kind: PhysicalEventType): Boolean =
+        when (type) {
             QuestObjectNodeType.PLAYER_BED_ENTER -> kind == PhysicalEventType.BED_ENTER
             QuestObjectNodeType.PLAYER_BED_LEAVE -> kind == PhysicalEventType.BED_LEAVE
             QuestObjectNodeType.PLAYER_BUCKET_FILL -> kind == PhysicalEventType.BUCKET_FILL
@@ -2693,42 +2892,70 @@ class BranchRuntimeManager(
             QuestObjectNodeType.PLAYER_VEHICLE_LEAVE -> kind == PhysicalEventType.VEHICLE_LEAVE
             else -> true
         }
-        if (!typeMatches && (node.type == QuestObjectNodeType.PLAYER_BED_ENTER || node.type == QuestObjectNodeType.PLAYER_BED_LEAVE)) {
+
+    private fun shouldSkipPhysicalType(
+        node: QuestObjectNode,
+        kind: PhysicalEventType,
+        typeMatches: Boolean,
+        player: org.bukkit.entity.Player,
+        model: QuestModel,
+        session: BranchSession,
+        detail: String?
+    ): Boolean {
+        if (typeMatches) return false
+        if (node.type == QuestObjectNodeType.PLAYER_BED_ENTER || node.type == QuestObjectNodeType.PLAYER_BED_LEAVE) {
             DebugLog.log(
                 "PHYS_BED_SKIP player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} type=${node.type} kind=$kind detail=$detail"
             )
-            return
+            return true
         }
-        if (!typeMatches) {
-            if (node.type == QuestObjectNodeType.PLAYER_VEHICLE_ENTER || node.type == QuestObjectNodeType.PLAYER_VEHICLE_LEAVE) {
-                DebugLog.log(
-                    "PHYS_VEHICLE_SKIP player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} type=${node.type} kind=$kind detail=$detail"
-                )
-            }
-            return
+        if (node.type == QuestObjectNodeType.PLAYER_VEHICLE_ENTER || node.type == QuestObjectNodeType.PLAYER_VEHICLE_LEAVE) {
+            DebugLog.log(
+                "PHYS_VEHICLE_SKIP player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} type=${node.type} kind=$kind detail=$detail"
+            )
+            return true
         }
+        return true
+    }
 
+    private fun resolveVehicleDetail(node: QuestObjectNode, detail: String?): String? {
+        if (detail == null) return null
+        if (node.type != QuestObjectNodeType.PLAYER_VEHICLE_ENTER && node.type != QuestObjectNodeType.PLAYER_VEHICLE_LEAVE) {
+            return detail
+        }
+        val upper = detail.uppercase()
+        return if (node.vehicleType?.equals("BOAT", true) == true && upper.endsWith("BOAT")) "BOAT" else upper
+    }
+
+    private fun passesPhysicalFilters(node: QuestObjectNode, detail: String?, vehicleDetail: String?): Boolean {
         if (node.type == QuestObjectNodeType.PLAYER_BUCKET_FILL && node.bucketType != null) {
-            if (detail == null || !node.bucketType.equals(detail, true)) return
+            if (detail == null || !node.bucketType.equals(detail, true)) return false
         }
         if (node.type == QuestObjectNodeType.PLAYER_SHOOT_PROJECTILE && node.projectileTypes.isNotEmpty()) {
-            if (detail == null || node.projectileTypes.none { it.equals(detail, true) }) return
+            if (detail == null || node.projectileTypes.none { it.equals(detail, true) }) return false
         }
-        val vehicleDetail = if (detail != null && (node.type == QuestObjectNodeType.PLAYER_VEHICLE_ENTER || node.type == QuestObjectNodeType.PLAYER_VEHICLE_LEAVE)) {
-            val upper = detail.uppercase()
-            if (node.vehicleType?.equals("BOAT", true) == true && upper.endsWith("BOAT")) "BOAT" else upper
-        } else detail
-
         if ((node.type == QuestObjectNodeType.PLAYER_VEHICLE_ENTER || node.type == QuestObjectNodeType.PLAYER_VEHICLE_LEAVE) && node.vehicleType != null) {
-            if (vehicleDetail == null || !node.vehicleType.equals(vehicleDetail, true)) return
+            if (vehicleDetail == null || !node.vehicleType.equals(vehicleDetail, true)) return false
         }
         if (node.type == QuestObjectNodeType.PLAYER_GAIN_HEALTH && node.regainCauses.isNotEmpty()) {
-            if (detail == null || node.regainCauses.none { it.equals(detail, true) }) return
+            if (detail == null || node.regainCauses.none { it.equals(detail, true) }) return false
         }
         if (node.type == QuestObjectNodeType.PLAYER_TAKE_DAMAGE && node.damageCauses.isNotEmpty()) {
-            if (detail == null || node.damageCauses.none { it.equals(detail, true) }) return
+            if (detail == null || node.damageCauses.none { it.equals(detail, true) }) return false
         }
+        return true
+    }
 
+    private fun logPhysicalEvent(
+        node: QuestObjectNode,
+        player: org.bukkit.entity.Player,
+        model: QuestModel,
+        session: BranchSession,
+        kind: PhysicalEventType,
+        amount: Double,
+        detail: String?,
+        vehicleDetail: String?
+    ) {
         if (node.type == QuestObjectNodeType.PLAYER_BED_ENTER || node.type == QuestObjectNodeType.PLAYER_BED_LEAVE) {
             DebugLog.log(
                 "PHYS_BED player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} type=${node.type} kind=$kind detail=$detail"
@@ -2754,9 +2981,13 @@ class BranchRuntimeManager(
                 "PHYS_BURN player=${player.name} quest=${model.id} branch=${session.branchId} node=${node.id} kind=$kind add=$amount goal=${node.distanceGoal ?: node.count} prev=${session.physicalProgress.getOrDefault(node.id, 0.0)}"
             )
         }
+    }
 
-        val goal = node.distanceGoal ?: node.count.toDouble().coerceAtLeast(1.0)
-        val add = when (node.type) {
+    private fun computePhysicalGoal(node: QuestObjectNode): Double =
+        node.distanceGoal ?: node.count.toDouble().coerceAtLeast(1.0)
+
+    private fun computePhysicalAdd(node: QuestObjectNode, amount: Double): Double =
+        when (node.type) {
             QuestObjectNodeType.PLAYER_GAIN_HEALTH,
             QuestObjectNodeType.PLAYER_GAIN_XP,
             QuestObjectNodeType.PLAYER_TAKE_DAMAGE -> amount
@@ -2764,18 +2995,17 @@ class BranchRuntimeManager(
             QuestObjectNodeType.PLAYER_BURN -> amount
             else -> 1.0
         }
-        val current = session.physicalProgress.getOrDefault(node.id, 0.0)
-        val updated = current + add
-        session.physicalProgress[node.id] = updated
-        questService.saveNodeProgress(player, model.id, session.branchId, node.id, updated)
-        val targetReached = updated >= goal
-        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2170", "handlePhysicalEvent progress", mapOf("questId" to model.id, "nodeId" to node.id, "current" to current, "add" to add, "updated" to updated, "goal" to goal, "targetReached" to targetReached))
-        if (targetReached) {
-            val gotoRaw = node.goto ?: return
-            val target = normalizeTarget(gotoRaw)
-            questService.clearNodeProgress(player, model.id, session.branchId, node.id)
-            runNode(player, model, session.branchId, target, 0)
-        }
+
+    private fun completePhysicalNode(
+        player: org.bukkit.entity.Player,
+        model: QuestModel,
+        session: BranchSession,
+        node: QuestObjectNode
+    ) {
+        val gotoRaw = node.goto ?: return
+        val target = normalizeTarget(gotoRaw)
+        questService.clearNodeProgress(player, model.id, session.branchId, node.id)
+        runNode(player, model, session.branchId, target, 0)
     }
 
     private fun isPhysicalNode(type: QuestObjectNodeType): Boolean =
@@ -2954,29 +3184,30 @@ class BranchRuntimeManager(
             else -> false
         }
 
-    internal fun handlePlayerItemEvent(
-        player: org.bukkit.entity.Player,
-        kind: ItemEventType,
-        item: ItemStack?,
-        inventoryType: String? = null,
-        slot: Int? = null,
-        villagerId: UUID? = null
-    ) {
-        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2314", "handlePlayerItemEvent entry", mapOf("playerUuid" to player.uniqueId.toString(), "kind" to kind.name, "itemType" to (item?.type?.name ?: "null"), "inventoryType" to (inventoryType ?: "null"), "slot" to (slot ?: "null"), "villagerId" to (villagerId?.toString() ?: "null")))
+    private data class ItemNodeContext(
+        val session: BranchSession,
+        val model: QuestModel,
+        val node: QuestObjectNode
+    )
+
+    private fun resolveItemNodeContext(player: org.bukkit.entity.Player): ItemNodeContext? {
         val session = sessions[player.uniqueId]
         if (session == null) {
             DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2320", "handlePlayerItemEvent no session", mapOf("playerUuid" to player.uniqueId.toString()))
-            return
+            return null
         }
-        val model = questService.questInfo(session.questId) ?: return
-        val branch = model.branches[session.branchId] ?: return
-        val node = branch.objects[session.nodeId] ?: return
+        val model = questService.questInfo(session.questId) ?: return null
+        val branch = model.branches[session.branchId] ?: return null
+        val node = branch.objects[session.nodeId] ?: return null
         if (!isPlayerItemNode(node.type)) {
             DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2326", "handlePlayerItemEvent not item node", mapOf("questId" to model.id, "nodeId" to node.id, "nodeType" to node.type.name))
-            return
+            return null
         }
+        return ItemNodeContext(session, model, node)
+    }
 
-        val typeMatches = when (node.type) {
+    private fun isItemEventMatch(nodeType: QuestObjectNodeType, kind: ItemEventType): Boolean =
+        when (nodeType) {
             QuestObjectNodeType.PLAYER_ITEMS_ACQUIRE -> kind == ItemEventType.ACQUIRE
             QuestObjectNodeType.PLAYER_ITEMS_BREW -> kind == ItemEventType.BREW
             QuestObjectNodeType.PLAYER_ITEMS_CONSUME -> kind == ItemEventType.CONSUME
@@ -2995,46 +3226,45 @@ class BranchRuntimeManager(
             QuestObjectNodeType.PLAYER_ITEMS_TRADE -> kind == ItemEventType.TRADE
             else -> false
         }
-        if (!typeMatches) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2575", "handlePlayerItemEvent type mismatch", mapOf("questId" to model.id, "nodeId" to node.id, "nodeType" to node.type.name, "kind" to kind.name))
-            return
-        }
 
-        if (!node.tradeAllowSameVillagers && villagerId != null) {
-            val seen = session.villagerCounted.getOrPut(node.id) { mutableSetOf() }
+    private fun checkTradeVillagerAllowed(
+        player: org.bukkit.entity.Player,
+        context: ItemNodeContext,
+        villagerId: UUID?
+    ): Boolean {
+        if (!context.node.tradeAllowSameVillagers && villagerId != null) {
+            val seen = context.session.villagerCounted.getOrPut(context.node.id) { mutableSetOf() }
             if (seen.contains(villagerId)) {
-                DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2579", "handlePlayerItemEvent same villager not allowed", mapOf("questId" to model.id, "nodeId" to node.id, "villagerId" to villagerId.toString()))
-                node.tradeAllowSameVillagersMessage?.let { MessageFormatter.send(player, it) }
-                return
+                DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2579", "handlePlayerItemEvent same villager not allowed", mapOf("questId" to context.model.id, "nodeId" to context.node.id, "villagerId" to villagerId.toString()))
+                context.node.tradeAllowSameVillagersMessage?.let { MessageFormatter.send(player, it) }
+                return false
             }
             seen.add(villagerId)
         }
+        return true
+    }
 
-        if ((kind == ItemEventType.BREW || kind == ItemEventType.MELT) && DebugLog.enabled) {
-            val meta = item?.itemMeta as? org.bukkit.inventory.meta.PotionMeta
-            val goalsDesc = node.itemGoals.joinToString { g ->
-                g.items.joinToString { it.type + ":" + (it.potionType ?: "") }
-            }
-            DebugLog.log("ITEM_EVT kind=$kind player=${player.name} item=${item?.type} base=${meta?.basePotionType?.name} goals=$goalsDesc")
-        }
-
+    private fun passesItemFilters(node: QuestObjectNode, inventoryType: String?, slot: Int?): Boolean {
         if (node.itemInventoryTypes.isNotEmpty() && inventoryType != null && node.itemInventoryTypes.none { it.equals(inventoryType, true) }) {
-            return
+            return false
         }
         if (node.itemInventorySlots.isNotEmpty() && slot != null && !node.itemInventorySlots.contains(slot)) {
-            return
+            return false
         }
         if (node.type == QuestObjectNodeType.PLAYER_ITEMS_INTERACT && node.itemClickType != null) {
             val click = inventoryType ?: ""
-            if (!node.itemClickType.equals(click, true)) return
+            if (!node.itemClickType.equals(click, true)) return false
         }
+        return true
+    }
 
-        val goals = node.itemGoals.ifEmpty {
+    private fun resolveItemGoals(node: QuestObjectNode): List<ItemGoal> =
+        node.itemGoals.ifEmpty {
             listOf(ItemGoal(id = "default", items = emptyList(), goal = node.count.toDouble().coerceAtLeast(1.0)))
         }
 
-        val matchedItem = item
-        val delta = when {
+    private fun computeItemDelta(kind: ItemEventType, matchedItem: ItemStack?): Double =
+        when {
             matchedItem != null && kind in setOf(
                 ItemEventType.PICKUP,
                 ItemEventType.ACQUIRE,
@@ -3052,6 +3282,15 @@ class BranchRuntimeManager(
             ) -> matchedItem.amount.toDouble().coerceAtLeast(1.0)
             else -> 1.0
         }
+
+    private fun applyItemGoals(
+        player: org.bukkit.entity.Player,
+        context: ItemNodeContext,
+        goals: List<ItemGoal>,
+        matchedItem: ItemStack?,
+        delta: Double,
+        kind: ItemEventType
+    ): Boolean {
         var progressed = false
         goals.forEach { goal ->
             val matchOk = when {
@@ -3067,48 +3306,84 @@ class BranchRuntimeManager(
                 return@forEach
             }
 
-            when (node.type) {
+            when (context.node.type) {
                 QuestObjectNodeType.PLAYER_ITEMS_REQUIRE -> {
-                    // handled below by inventory check
+                    // handled by inventory check
                 }
                 else -> {
-                    val progMap = session.itemProgress.getOrPut(node.id) { mutableMapOf() }
+                    val progMap = context.session.itemProgress.getOrPut(context.node.id) { mutableMapOf() }
                     val cur = progMap.getOrDefault(goal.id, 0.0)
                     val updated = cur + delta
                     progMap[goal.id] = updated
-                    questService.saveNodeProgress(player, model.id, session.branchId, node.id, updated, goal.id)
-                    DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2658", "handlePlayerItemEvent progress", mapOf("questId" to model.id, "nodeId" to node.id, "goalId" to goal.id, "current" to cur, "delta" to delta, "updated" to updated, "goal" to goal.goal))
+                    questService.saveNodeProgress(player, context.model.id, context.session.branchId, context.node.id, updated, goal.id)
+                    DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2658", "handlePlayerItemEvent progress", mapOf("questId" to context.model.id, "nodeId" to context.node.id, "goalId" to goal.id, "current" to cur, "delta" to delta, "updated" to updated, "goal" to goal.goal))
                     progressed = true
                     if ((kind == ItemEventType.BREW || kind == ItemEventType.MELT) && DebugLog.enabled) {
                         DebugLog.log("ITEM_PROG kind=$kind player=${player.name} goal=${goal.id} new=$updated need=${goal.goal}")
                     }
                     if (goal.take && matchedItem != null) {
-                        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2664", "handlePlayerItemEvent taking item", mapOf("questId" to model.id, "nodeId" to node.id, "itemType" to matchedItem.type.name, "amount" to matchedItem.amount))
+                        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2664", "handlePlayerItemEvent taking item", mapOf("questId" to context.model.id, "nodeId" to context.node.id, "itemType" to matchedItem.type.name, "amount" to matchedItem.amount))
                         removeOne(player, matchedItem)
                     }
                 }
             }
         }
+        return progressed
+    }
 
-        if (node.type == QuestObjectNodeType.PLAYER_ITEMS_REQUIRE) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2671", "handlePlayerItemEvent checking REQUIRE", mapOf("questId" to model.id, "nodeId" to node.id))
-            if (checkRequireSatisfied(player, goals, node.itemsRequired)) {
-                DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2672", "handlePlayerItemEvent REQUIRE satisfied", mapOf("questId" to model.id, "nodeId" to node.id, "hasGoto" to (node.goto != null)))
-                node.goto?.let { handleGoto(player, model, session.branchId, it, 0) }
+    private fun areItemGoalsDone(session: BranchSession, nodeId: String, goals: List<ItemGoal>): Boolean {
+        val progMap = session.itemProgress[nodeId] ?: return false
+        return goals.all { g -> (progMap[g.id] ?: 0.0) >= g.goal }
+    }
+
+    internal fun handlePlayerItemEvent(
+        player: org.bukkit.entity.Player,
+        kind: ItemEventType,
+        item: ItemStack?,
+        inventoryType: String? = null,
+        slot: Int? = null,
+        villagerId: UUID? = null
+    ) {
+        DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2314", "handlePlayerItemEvent entry", mapOf("playerUuid" to player.uniqueId.toString(), "kind" to kind.name, "itemType" to (item?.type?.name ?: "null"), "inventoryType" to (inventoryType ?: "null"), "slot" to (slot ?: "null"), "villagerId" to (villagerId?.toString() ?: "null")))
+        val context = resolveItemNodeContext(player) ?: return
+        if (!isItemEventMatch(context.node.type, kind)) {
+            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2575", "handlePlayerItemEvent type mismatch", mapOf("questId" to context.model.id, "nodeId" to context.node.id, "nodeType" to context.node.type.name, "kind" to kind.name))
+            return
+        }
+        if (!checkTradeVillagerAllowed(player, context, villagerId)) return
+
+        if ((kind == ItemEventType.BREW || kind == ItemEventType.MELT) && DebugLog.enabled) {
+            val meta = item?.itemMeta as? org.bukkit.inventory.meta.PotionMeta
+            val goalsDesc = context.node.itemGoals.joinToString { g ->
+                g.items.joinToString { it.type + ":" + (it.potionType ?: "") }
+            }
+            DebugLog.log("ITEM_EVT kind=$kind player=${player.name} item=${item?.type} base=${meta?.basePotionType?.name} goals=$goalsDesc")
+        }
+
+        if (!passesItemFilters(context.node, inventoryType, slot)) return
+
+        val goals = resolveItemGoals(context.node)
+        val matchedItem = item
+        val delta = computeItemDelta(kind, matchedItem)
+        val progressed = applyItemGoals(player, context, goals, matchedItem, delta, kind)
+
+        if (context.node.type == QuestObjectNodeType.PLAYER_ITEMS_REQUIRE) {
+            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2671", "handlePlayerItemEvent checking REQUIRE", mapOf("questId" to context.model.id, "nodeId" to context.node.id))
+            if (checkRequireSatisfied(player, goals, context.node.itemsRequired)) {
+                DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2672", "handlePlayerItemEvent REQUIRE satisfied", mapOf("questId" to context.model.id, "nodeId" to context.node.id, "hasGoto" to (context.node.goto != null)))
+                context.node.goto?.let { handleGoto(player, context.model, context.session.branchId, it, 0) }
             }
             return
         }
 
         if (!progressed) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2678", "handlePlayerItemEvent no progress", mapOf("questId" to model.id, "nodeId" to node.id))
+            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2678", "handlePlayerItemEvent no progress", mapOf("questId" to context.model.id, "nodeId" to context.node.id))
             return
         }
-        val progMap = session.itemProgress[node.id] ?: return
-        val allDone = goals.all { g -> (progMap[g.id] ?: 0.0) >= g.goal }
-        if (allDone) {
-            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2681", "handlePlayerItemEvent all done", mapOf("questId" to model.id, "nodeId" to node.id, "goalsCount" to goals.size))
-            questService.clearNodeProgress(player, model.id, session.branchId, node.id)
-            node.goto?.let { handleGoto(player, model, session.branchId, it, 0, node.id) }
+        if (areItemGoalsDone(context.session, context.node.id, goals)) {
+            DebugLog.logToFile("debug-session", "run1", "RUNTIME", "BranchRuntimeManager.kt:2681", "handlePlayerItemEvent all done", mapOf("questId" to context.model.id, "nodeId" to context.node.id, "goalsCount" to goals.size))
+            questService.clearNodeProgress(player, context.model.id, context.session.branchId, context.node.id)
+            context.node.goto?.let { handleGoto(player, context.model, context.session.branchId, it, 0, context.node.id) }
         }
     }
 
@@ -4063,3 +4338,6 @@ class BranchRuntimeManager(
         var selected: Boolean = false
     )
 }
+
+
+
