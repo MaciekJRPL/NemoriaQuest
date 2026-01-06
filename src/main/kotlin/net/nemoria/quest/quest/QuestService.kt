@@ -549,7 +549,7 @@ class QuestService(
         citizensNpcParticlesIds = citizensNpcActivatorConfig
             .filter { (_, cfg) -> !cfg.particlesAvailableScript.isNullOrBlank() || !cfg.particlesProgressScript.isNullOrBlank() }
             .keys
-        citizensNpcProximityIds = (citizensNpcAutoStartIds + citizensNpcParticlesIds)
+        citizensNpcProximityIds = citizensNpcAutoStartIds + citizensNpcParticlesIds
         val maxAutoStart = citizensNpcActivatorConfig.values.maxOfOrNull { it.autoStartDistance ?: 0.0 } ?: 0.0
         val maxResetDist = citizensNpcActivatorConfig.values.maxOfOrNull { it.resetDistance ?: 0.0 } ?: 0.0
         val particlesRange = if (citizensNpcParticlesIds.isNotEmpty()) citizensActivatorParticlesRange else 0.0
@@ -1202,7 +1202,7 @@ class QuestService(
         if (plugin.server.pluginManager.getPlugin("Citizens") == null) return null
         if (citizensNpcProximityIds.isEmpty() && activatorDialogStates[player.uniqueId].isNullOrEmpty()) return null
 
-        val blockKey = (((to.blockX.toLong() and 0x3FFFFFF) shl 38) or ((to.blockZ.toLong() and 0x3FFFFFF) shl 12) or (to.blockY.toLong() and 0xFFF))
+        val blockKey = ((to.blockX.toLong() and 0x3FFFFFF) shl 38) or ((to.blockZ.toLong() and 0x3FFFFFF) shl 12) or (to.blockY.toLong() and 0xFFF)
         if (lastActivatorMoveBlockKey[player.uniqueId] == blockKey) return null
         lastActivatorMoveBlockKey[player.uniqueId] = blockKey
 
@@ -2054,7 +2054,7 @@ class QuestService(
     fun formatDuration(seconds: Long): String {
         if (seconds <= 0) return "0:00"
         val h = seconds / 3600
-        val m = (seconds % 3600) / 60
+        val m = seconds % 3600 / 60
         val s = seconds % 60
         return if (h > 0) {
             String.format("%d:%02d:%02d", h, m, s)
@@ -2395,9 +2395,9 @@ class QuestService(
         val desc = node.description ?: return null
         val base = renderPlaceholders(desc, questId, player)
         val goalById = when {
-            node.blockGoals.isNotEmpty() -> node.blockGoals.associate { (it.id.ifBlank { "default" }) to it.goal }
-            node.itemGoals.isNotEmpty() -> node.itemGoals.associate { (it.id.ifBlank { "default" }) to it.goal }
-            node.goals.isNotEmpty() -> node.goals.associate { (it.id.ifBlank { "default" }) to it.goal }
+            node.blockGoals.isNotEmpty() -> node.blockGoals.associate { it.id.ifBlank { "default" } to it.goal }
+            node.itemGoals.isNotEmpty() -> node.itemGoals.associate { it.id.ifBlank { "default" } to it.goal }
+            node.goals.isNotEmpty() -> node.goals.associate { it.id.ifBlank { "default" } to it.goal }
             else -> emptyMap()
         }
         val progressById = if (goalById.isNotEmpty()) loadNodeGoalProgress(player, questId, branchId, node.id) else emptyMap()
